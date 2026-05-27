@@ -102,7 +102,7 @@ export const propertiesController = {
       });
       if (!existing) throw new AppError('Propiedad no encontrada.', 404);
 
-      const activeContracts = existing.units.flatMap((u) => u.contracts);
+      const activeContracts = existing.units.flatMap((u: { contracts: unknown[] }) => u.contracts);
       if (activeContracts.length > 0) {
         throw new AppError('No podés eliminar una propiedad con contratos activos.', 400);
       }

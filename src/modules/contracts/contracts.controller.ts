@@ -1,8 +1,11 @@
 // src/modules/contracts/contracts.controller.ts
 import { Response, NextFunction } from 'express';
+import { PrismaClient } from '@prisma/client';
 import { prisma } from '../../config/database';
 import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse, paginatedResponse } from '../../types';
+
+type PrismaTx = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
 
 export const contractsController = {
   /** GET /api/contracts */
@@ -84,7 +87,7 @@ export const contractsController = {
       }
 
       // OPERACIÓN ATÓMICA: crear contrato + marcar unidad como ocupada
-      const contract = await prisma.$transaction(async (tx) => {
+      const contract = await prisma.$transaction(async (tx: PrismaTx) => {
         const c = await tx.contract.create({
           data: {
             unitId, tenantId,
@@ -123,7 +126,7 @@ export const contractsController = {
         throw new AppError('Solo se pueden rescindir contratos activos.', 400);
       }
 
-      await prisma.$transaction(async (tx) => {
+      await prisma.$transaction(async (tx: PrismaTx) => {
         await tx.contract.update({
           where: { id: contract.id },
           data: { status: 'TERMINATED', terminatedAt: new Date(), terminationReason: reason },

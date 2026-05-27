@@ -23,10 +23,11 @@ export const authController = {
 
       await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
 
-      const token = jwt.sign(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const token = (jwt.sign as any)(
         { id: user.id, email: user.email, role: user.role },
-        env.JWT_SECRET as string,
-        { expiresIn: env.JWT_EXPIRES_IN as string }
+        env.JWT_SECRET,
+        { expiresIn: env.JWT_EXPIRES_IN }
       );
 
       res.json(successResponse({
