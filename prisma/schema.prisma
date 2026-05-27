@@ -1,0 +1,200 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ════════════════════════════════════════════
+// ENUMERACIONES
+// ════════════════════════════════════════════
+
+enum Currency {
+  HNL
+  USD
+}
+
+enum ContractStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIAL
+  LATE
+  WAIVED
+}
+
+enum UserRole {
+  ADMIN
+  OWNER
+  VIEWER
+}
+
+// ════════════════════════════════════════════
+// USUARIOS
+// ════════════════════════════════════════════
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique
+  passwordHash  String
+  name          String
+  phone         String?
+  role          UserRole   @default(OWNER)
+  baseCurrency  Currency   @default(HNL)
+  printPreview  Boolean    @default(true)
+  isActive      Boolean    @default(true)
+  lastLoginAt   DateTime?
+  properties    Property[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@map("users")
+}
+
+// ════════════════════════════════════════════
+// PROPIEDADES
+// ════════════════════════════════════════════
+model Property {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  name        String
+  address     String
+  city        String   @default("Tegucigalpa")
+  department  String   @default("Francisco Morazán")
+  description String?
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  units       Unit[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("properties")
+}
+
+// ════════════════════════════════════════════
+// UNIDADES
+// ════════════════════════════════════════════
+model Unit {
+  id           String    @id @default(cuid())
+  propertyId   String
+  property     Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  number       String
+  floor        Int?
+  bedrooms     Int       @default(1)
+  bathrooms    Int       @default(1)
+  squareMeters Decimal?  @db.Decimal(8, 2)
+  isOccupied   Boolean   @default(false)
+  description  String?
+  contracts    Contract[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([propertyId, number])
+  @@map("units")
+}
+
+// ════════════════════════════════════════════
+// INQUILINOS
+// ════════════════════════════════════════════
+model Tenant {
+  id         String     @id @default(cuid())
+  firstName  String
+  lastName   String
+  email      String?    @unique
+  phone      String
+  nationalId String?    @unique
+  altAddress String?
+  notes      String?
+  isActive   Boolean    @default(true)
+  contracts  Contract[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@map("tenants")
+}
+
+// ════════════════════════════════════════════
+// CONTRATOS
+// ════════════════════════════════════════════
+model Contract {
+  id                   String         @id @default(cuid())
+  unitId               String
+  unit                 Unit           @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  tenantId             String
+  tenant               Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  startDate            DateTime
+  endDate              DateTime
+  paymentDayOfMonth    Int
+  monthlyRent          Decimal        @db.Decimal(12, 2)
+  currency             Currency
+  depositAmount        Decimal        @db.Decimal(12, 2)
+  depositCurrency      Currency
+  depositPaidAt        DateTime?
+  lateFeePercent       Decimal        @db.Decimal(5, 2)
+  gracePeriodDays      Int            @default(5)
+  status               ContractStatus @default(ACTIVE)
+  terminatedAt         DateTime?
+  terminationReason    String?
+  renewalNoticeSentAt  DateTime?
+  notes                String?
+  contractFileUrl      String?
+  payments             Payment[]
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  @@map("contracts")
+}
+
+// ════════════════════════════════════════════
+// PAGOS
+// ════════════════════════════════════════════
+model Payment {
+  id                       String        @id @default(cuid())
+  contractId               String
+  contract                 Contract      @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  periodMonth              Int
+  periodYear               Int
+  amountDue                Decimal       @db.Decimal(12, 2)
+  amountPaid               Decimal       @db.Decimal(12, 2) @default(0)
+  paymentCurrency          Currency
+  exchangeRateUsed         Decimal?      @db.Decimal(10, 4)
+  amountInContractCurrency Decimal?      @db.Decimal(12, 2)
+  lateFeeAmount            Decimal       @db.Decimal(12, 2) @default(0)
+  isLate                   Boolean       @default(false)
+  daysLate                 Int           @default(0)
+  status                   PaymentStatus @default(PENDING)
+  dueDate                  DateTime
+  paymentDate              DateTime?
+  receiptNumber            String        @unique @default(cuid())
+  receiptSentAt            DateTime?
+  receiptPdfUrl            String?
+  notes                    String?
+  registeredById           String?
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+
+  @@unique([contractId, periodMonth, periodYear])
+  @@map("payments")
+}
+
+// ════════════════════════════════════════════
+// TIPOS DE CAMBIO
+// ════════════════════════════════════════════
+model ExchangeRate {
+  id        String   @id @default(cuid())
+  date      DateTime @db.Date
+  rate      Decimal  @db.Decimal(10, 4)
+  source    String   @default("ExchangeRate-API")
+  createdAt DateTime @default(now())
+
+  @@unique([date])
+  @@map("exchange_rates")
+}
