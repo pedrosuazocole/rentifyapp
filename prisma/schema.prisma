@@ -1,0 +1,373 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ════════════════════════════════════════════
+// ENUMERACIONES
+// ════════════════════════════════════════════
+
+enum Currency {
+  HNL
+  USD
+}
+
+enum ContractStatus {
+  PENDING
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  PARTIAL
+  LATE
+  WAIVED
+}
+
+enum UserRole {
+  ADMIN
+  OWNER
+  VIEWER
+}
+
+// ════════════════════════════════════════════
+// EMPRESAS
+// ════════════════════════════════════════════
+model Company {
+  id          String     @id @default(cuid())
+  name        String
+  rtn         String?    @unique // Registro Tributario Nacional Honduras
+  email       String?
+  phone       String?
+  address     String?
+  city        String?    @default("Tegucigalpa")
+  department  String?    @default("Francisco Morazán")
+  logo        String?    // URL del logo
+  isActive    Boolean    @default(true)
+  notes       String?
+
+  users               User[]
+  properties          Property[]
+  invoices            Invoice[]
+  notificationConfig  NotificationConfig?
+
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@map("companies")
+}
+
+// ════════════════════════════════════════════
+// USUARIOS (Administradores / Arrendadores)
+// ════════════════════════════════════════════
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique
+  passwordHash  String
+  name          String
+  phone         String?
+  role          UserRole   @default(OWNER)
+  baseCurrency  Currency   @default(HNL)
+  printPreview  Boolean    @default(true)
+  isActive      Boolean    @default(true)
+  lastLoginAt   DateTime?
+
+  companyId     String?
+  company       Company?   @relation(fields: [companyId], references: [id])
+
+  properties    Property[]
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  @@map("users")
+}
+
+// ════════════════════════════════════════════
+// PROPIEDADES
+// ════════════════════════════════════════════
+model Property {
+  id          String   @id @default(cuid())
+  ownerId     String
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Restrict)
+  name        String
+  address     String
+  city        String   @default("Tegucigalpa")
+  department  String   @default("Francisco Morazán")
+  description String?
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+
+  companyId   String?
+  company     Company? @relation(fields: [companyId], references: [id])
+
+  units       Unit[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("properties")
+}
+
+// ════════════════════════════════════════════
+// UNIDADES
+// ════════════════════════════════════════════
+model Unit {
+  id           String    @id @default(cuid())
+  propertyId   String
+  property     Property  @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  number       String
+  floor        Int?
+  bedrooms     Int       @default(1)
+  bathrooms    Int       @default(1)
+  squareMeters Decimal?  @db.Decimal(8, 2)
+  isOccupied   Boolean   @default(false)
+  description  String?
+  contracts    Contract[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([propertyId, number])
+  @@map("units")
+}
+
+// ════════════════════════════════════════════
+// INQUILINOS
+// ════════════════════════════════════════════
+model Tenant {
+  id         String     @id @default(cuid())
+  firstName  String
+  lastName   String
+  email      String?    @unique
+  phone      String
+  nationalId String?    @unique
+  altAddress String?
+  notes      String?
+  isActive   Boolean    @default(true)
+  telegramChatId String? // Chat ID de Telegram del inquilino
+  contracts  Contract[]
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@map("tenants")
+}
+
+// ════════════════════════════════════════════
+// CONTRATOS
+// ════════════════════════════════════════════
+model Contract {
+  id                   String         @id @default(cuid())
+  unitId               String
+  unit                 Unit           @relation(fields: [unitId], references: [id], onDelete: Restrict)
+  tenantId             String
+  tenant               Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  startDate            DateTime
+  endDate              DateTime
+  paymentDayOfMonth    Int
+  monthlyRent          Decimal        @db.Decimal(12, 2)
+  currency             Currency
+  depositAmount        Decimal        @db.Decimal(12, 2)
+  depositCurrency      Currency
+  depositPaidAt        DateTime?
+  lateFeePercent       Decimal        @db.Decimal(5, 2)
+  gracePeriodDays      Int            @default(5)
+  status               ContractStatus @default(ACTIVE)
+  terminatedAt         DateTime?
+  terminationReason    String?
+  renewalNoticeSentAt  DateTime?
+  notes                String?
+  contractFileUrl      String?
+  payments             Payment[]
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  @@map("contracts")
+}
+
+// ════════════════════════════════════════════
+// PAGOS
+// ════════════════════════════════════════════
+model Payment {
+  id                       String        @id @default(cuid())
+  contractId               String
+  contract                 Contract      @relation(fields: [contractId], references: [id], onDelete: Restrict)
+  periodMonth              Int
+  periodYear               Int
+  amountDue                Decimal       @db.Decimal(12, 2)
+  amountPaid               Decimal       @db.Decimal(12, 2) @default(0)
+  paymentCurrency          Currency
+  exchangeRateUsed         Decimal?      @db.Decimal(10, 4)
+  amountInContractCurrency Decimal?      @db.Decimal(12, 2)
+  lateFeeAmount            Decimal       @db.Decimal(12, 2) @default(0)
+  isLate                   Boolean       @default(false)
+  daysLate                 Int           @default(0)
+  status                   PaymentStatus @default(PENDING)
+  dueDate                  DateTime
+  paymentDate              DateTime?
+  receiptNumber            String        @unique @default(cuid())
+  receiptSentAt            DateTime?
+  receiptPdfUrl            String?
+  notes                    String?
+  registeredById           String?
+  invoices                 Invoice[]
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
+
+  @@unique([contractId, periodMonth, periodYear])
+  @@map("payments")
+}
+
+// ════════════════════════════════════════════
+// TIPOS DE CAMBIO
+// ════════════════════════════════════════════
+model ExchangeRate {
+  id        String   @id @default(cuid())
+  date      DateTime @db.Date
+  rate      Decimal  @db.Decimal(10, 4)
+  source    String   @default("ExchangeRate-API")
+  createdAt DateTime @default(now())
+
+  @@unique([date])
+  @@map("exchange_rates")
+}
+
+// ════════════════════════════════════════════
+// FACTURAS (Cumplimiento SAR Honduras)
+// Resolución SAR: CAI, correlativo, datos fiscales
+// ════════════════════════════════════════════
+enum InvoiceStatus {
+  DRAFT      // Borrador
+  ISSUED     // Emitida
+  CANCELLED  // Anulada
+}
+
+model Invoice {
+  id              String        @id @default(cuid())
+  paymentId       String?       // Pago asociado (opcional)
+  payment         Payment?      @relation(fields: [paymentId], references: [id])
+  companyId       String?
+  company         Company?      @relation(fields: [companyId], references: [id])
+
+  // ── Datos del emisor (arrendador) ──────────
+  issuerName      String        // Nombre o razón social
+  issuerRtn       String        // RTN del emisor (14 dígitos)
+  issuerAddress   String        // Dirección fiscal
+  issuerPhone     String?
+
+  // ── Datos del receptor (inquilino) ──────────
+  receiverName    String        // Nombre del cliente
+  receiverRtn     String?       // RTN del receptor (opcional)
+  receiverAddress String?
+
+  // ── Datos fiscales SAR ───────────────────────
+  cai             String        // Código de Autorización de Impresión
+  invoiceRange    String        // Rango autorizado ej: 000-001-01-00000001-00000500
+  invoiceNumber   String        @unique // Número correlativo ej: 000-001-01-00000001
+  establishmentCode String      @default("000") // Código de establecimiento
+  pointOfSaleCode String        @default("001") // Punto de emisión
+  documentType    String        @default("01")  // 01=Factura, 03=N.Crédito, 04=N.Débito
+  issuedAt        DateTime      @default(now())
+  expiresAt       DateTime      // Fecha límite de emisión del CAI
+
+  // ── Montos ───────────────────────────────────
+  currency        Currency      @default(HNL)
+  subtotal        Decimal       @db.Decimal(12, 2) // Monto antes de ISV
+  isvPercent      Decimal       @db.Decimal(5, 2)  @default(15) // ISV 15% Honduras
+  isvAmount       Decimal       @db.Decimal(12, 2) // Monto del ISV
+  total           Decimal       @db.Decimal(12, 2) // Total con ISV
+  exchangeRate    Decimal?      @db.Decimal(10, 4) // Si es en USD
+
+  // ── Concepto ─────────────────────────────────
+  description     String        // Concepto de la factura
+  periodMonth     Int?
+  periodYear      Int?
+
+  status          InvoiceStatus @default(ISSUED)
+  cancelledAt     DateTime?
+  cancelReason    String?
+  pdfUrl          String?
+  waSentAt        DateTime?     // Cuándo se envió por WhatsApp
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@map("invoices")
+}
+
+// ════════════════════════════════════════════
+// CONFIGURACIÓN DE NOTIFICACIONES WHATSAPP
+// Una sola fila por empresa/sistema (singleton)
+// ════════════════════════════════════════════
+model NotificationConfig {
+  id                    String   @id @default(cuid())
+  companyId             String?  @unique
+  company               Company? @relation(fields: [companyId], references: [id])
+
+  // ── Activar/desactivar por tipo ──────────────
+  reminderEnabled       Boolean  @default(true)   // 3 días antes del vencimiento
+  receiptEnabled        Boolean  @default(true)   // Al registrar pago
+  lateNoticeEnabled     Boolean  @default(true)   // Al entrar en mora
+  renewalEnabled        Boolean  @default(true)   // 30 días antes del fin del contrato
+
+  // ── Configuración de tiempos ─────────────────
+  reminderDaysBefore    Int      @default(3)       // Cuántos días antes recordar
+  renewalDaysBefore     Int      @default(30)      // Cuántos días antes avisar renovación
+  sendHour              Int      @default(8)       // Hora de envío (0-23) en America/Tegucigalpa
+  sendMinute            Int      @default(0)
+
+  // ── Números adicionales ───────────────────────
+  // Lista separada por comas de números que reciben TODAS las notificaciones
+  // Ej: "+50499887766,+50488776655"
+  ccNumbers             String?
+
+  // ── Plantillas personalizadas (JSON) ─────────
+  reminderTemplate      String?  // Plantilla custom para recordatorios
+  receiptTemplate       String?  // Plantilla custom para recibos
+  lateTemplate          String?  // Plantilla custom para mora
+  renewalTemplate       String?  // Plantilla custom para renovaciones
+
+  updatedAt             DateTime @updatedAt
+  updatedById           String?
+
+  @@map("notification_configs")
+}
+
+// ════════════════════════════════════════════
+// HISTORIAL DE NOTIFICACIONES ENVIADAS
+// ════════════════════════════════════════════
+enum NotificationType {
+  REMINDER   // Recordatorio de pago
+  RECEIPT    // Recibo de pago
+  LATE       // Aviso de mora
+  RENEWAL    // Aviso de renovación
+  INVOICE    // Factura emitida
+  TEST       // Mensaje de prueba
+}
+
+enum NotificationStatus {
+  SENT    // Enviado correctamente
+  FAILED  // Error al enviar
+  SKIPPED // Omitido (config desactivada)
+}
+
+model NotificationLog {
+  id           String             @id @default(cuid())
+  type         NotificationType
+  status       NotificationStatus
+  toPhone      String
+  tenantName   String?
+  message      String             // Cuerpo del mensaje enviado
+  twilioSid    String?            // SID de Twilio si fue exitoso
+  errorMessage String?            // Detalle del error si falló
+  contractId   String?
+  paymentId    String?
+  sentAt       DateTime           @default(now())
+
+  @@map("notification_logs")
+}
+

@@ -1,0 +1,59 @@
+// src/modules/exchange-rates/exchange-rates.routes.ts
+import { Router, Request, Response, NextFunction } from 'express';
+import { authenticate, authorize } from '../../middlewares/auth.middleware';
+import { ExchangeRateService } from '../../services/exchange-rate.service';
+import { successResponse, paginatedResponse } from '../../types';
+import { prisma } from '../../config/database';
+import { AppError } from '../../middlewares/error.middleware';
+
+const router = Router();
+router.use(authenticate);
+
+/** GET /api/exchange-rates/today */
+router.get('/today', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rate = await ExchangeRateService.getTodayRate();
+    res.json(successResponse({ rate, currency: 'USD/HNL', date: new Date().toISOString().split('T')[0] }));
+  } catch (err) { next(err); }
+});
+
+/** GET /api/exchange-rates */
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 30;
+    const { rates, total } = await ExchangeRateService.getHistory(page, limit);
+    res.json(paginatedResponse(rates, page, limit, total));
+  } catch (err) { next(err); }
+});
+
+/** POST /api/exchange-rates/fetch — actualizar desde API externa */
+router.post('/fetch', authorize('ADMIN'), async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const rate = await ExchangeRateService.fetchAndSave();
+    res.json(successResponse({ rate }, `Tipo de cambio actualizado: L ${rate} por USD`));
+  } catch (err) { next(err); }
+});
+
+/** POST /api/exchange-rates/manual — guardar tasa manual */
+router.post('/manual', authorize('ADMIN', 'OWNER'), async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { date, rate } = req.body;
+
+    if (!date || !rate) throw new AppError('Fecha y tasa son requeridas.', 400);
+    if (parseFloat(rate) <= 0) throw new AppError('La tasa debe ser mayor a 0.', 400);
+
+    const dateObj = new Date(date);
+    dateObj.setHours(0, 0, 0, 0);
+
+    const saved = await prisma.exchangeRate.upsert({
+      where: { date: dateObj },
+      update: { rate: parseFloat(rate), source: 'Manual' },
+      create: { date: dateObj, rate: parseFloat(rate), source: 'Manual' },
+    });
+
+    res.json(successResponse(saved, `Tasa guardada: L ${rate} por USD para el ${date}`));
+  } catch (err) { next(err); }
+});
+
+export default router;

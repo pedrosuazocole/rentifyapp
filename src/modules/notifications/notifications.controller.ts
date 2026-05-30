@@ -1,0 +1,162 @@
+// src/modules/notifications/notifications.controller.ts
+import { Response, NextFunction } from 'express';
+import { prisma } from '../../config/database';
+import { AppError } from '../../middlewares/error.middleware';
+import { AuthenticatedRequest, successResponse } from '../../types';
+import { TelegramService } from '../../services/telegram.service';
+
+export const notificationsController = {
+  /** GET /api/notifications/config */
+  async getConfig(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      let config = await prisma.notificationConfig.findFirst({ where: { companyId: null } });
+      if (!config) {
+        config = await prisma.notificationConfig.create({ data: {} });
+      }
+      const telegramConfigured = TelegramService.isConfigured();
+      const botInfo = telegramConfigured ? await TelegramService.getMe() : null;
+      res.json(successResponse({ ...config, telegramConfigured, botUsername: botInfo?.username }));
+    } catch (err) { next(err); }
+  },
+
+  /** PUT /api/notifications/config */
+  async updateConfig(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const {
+        reminderEnabled, receiptEnabled, lateNoticeEnabled, renewalEnabled,
+        reminderDaysBefore, renewalDaysBefore, sendHour, sendMinute, ccNumbers,
+      } = req.body;
+
+      if (sendHour !== undefined && (sendHour < 0 || sendHour > 23)) {
+        throw new AppError('La hora debe estar entre 0 y 23.', 400);
+      }
+
+      let config = await prisma.notificationConfig.findFirst({ where: { companyId: null } });
+      const data = {
+        ...(reminderEnabled    !== undefined && { reminderEnabled }),
+        ...(receiptEnabled     !== undefined && { receiptEnabled }),
+        ...(lateNoticeEnabled  !== undefined && { lateNoticeEnabled }),
+        ...(renewalEnabled     !== undefined && { renewalEnabled }),
+        ...(reminderDaysBefore !== undefined && { reminderDaysBefore }),
+        ...(renewalDaysBefore  !== undefined && { renewalDaysBefore }),
+        ...(sendHour           !== undefined && { sendHour }),
+        ...(sendMinute         !== undefined && { sendMinute }),
+        ...(ccNumbers          !== undefined && { ccNumbers }),
+        updatedById: req.user!.id,
+      };
+
+      config = config
+        ? await prisma.notificationConfig.update({ where: { id: config.id }, data })
+        : await prisma.notificationConfig.create({ data });
+
+      res.json(successResponse(config, 'Configuración guardada.'));
+    } catch (err) { next(err); }
+  },
+
+  /** POST /api/notifications/test — enviar mensaje de prueba por Telegram */
+  async sendTest(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { chatId } = req.body;
+      if (!chatId) throw new AppError('El Chat ID de Telegram es requerido.', 400);
+
+      if (!TelegramService.isConfigured()) {
+        throw new AppError(
+          'Telegram no está configurado. Agregá TELEGRAM_BOT_TOKEN en Railway → Variables.',
+          400
+        );
+      }
+
+      const result = await TelegramService.sendTest(chatId);
+
+      await prisma.notificationLog.create({
+        data: {
+          type: 'TEST',
+          status: result.success ? 'SENT' : 'FAILED',
+          toPhone: chatId,
+          tenantName: 'Mensaje de prueba',
+          message: '🧪 Mensaje de prueba desde Rentify App',
+          errorMessage: result.error,
+        },
+      });
+
+      res.json(successResponse(result,
+        result.success ? '✅ Mensaje enviado correctamente.' : `❌ Error: ${result.error}`
+      ));
+    } catch (err) { next(err); }
+  },
+
+  /** GET /api/notifications/logs */
+  async getLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const page   = parseInt(req.query.page as string) || 1;
+      const limit  = parseInt(req.query.limit as string) || 20;
+      const type   = req.query.type as string;
+      const status = req.query.status as string;
+      const skip   = (page - 1) * limit;
+
+      const where: Record<string, unknown> = {};
+      if (type)   where.type   = type;
+      if (status) where.status = status;
+
+      const [logs, total] = await Promise.all([
+        prisma.notificationLog.findMany({ where, orderBy: { sentAt: 'desc' }, skip, take: limit }),
+        prisma.notificationLog.count({ where }),
+      ]);
+
+      res.json(successResponse({ logs, total, page, totalPages: Math.ceil(total / limit) }));
+    } catch (err) { next(err); }
+  },
+
+  /** DELETE /api/notifications/logs */
+  async clearLogs(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { olderThanDays = 30 } = req.body;
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - olderThanDays);
+      const { count } = await prisma.notificationLog.deleteMany({ where: { sentAt: { lt: cutoff } } });
+      res.json(successResponse({ deleted: count }, `${count} registros eliminados.`));
+    } catch (err) { next(err); }
+  },
+
+  /** GET /api/notifications/status */
+  async getStatus(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const telegramConfigured = TelegramService.isConfigured();
+      const botInfo = telegramConfigured ? await TelegramService.getMe() : null;
+
+      const [totalSent, totalFailed, lastSent] = await Promise.all([
+        prisma.notificationLog.count({ where: { status: 'SENT' } }),
+        prisma.notificationLog.count({ where: { status: 'FAILED' } }),
+        prisma.notificationLog.findFirst({ orderBy: { sentAt: 'desc' }, where: { status: 'SENT' } }),
+      ]);
+
+      const in3days = new Date();
+      in3days.setDate(in3days.getDate() + 3);
+      const nextReminders = await prisma.payment.count({
+        where: { status: 'PENDING', dueDate: { gte: new Date(), lte: in3days } },
+      });
+
+      // Inquilinos sin Telegram configurado
+      const tenantsWithoutTelegram = await prisma.tenant.count({
+        where: { isActive: true, telegramChatId: null },
+      });
+
+      res.json(successResponse({
+        telegramConfigured,
+        botUsername: botInfo?.username,
+        stats: { totalSent, totalFailed, lastSentAt: lastSent?.sentAt || null, nextReminders, tenantsWithoutTelegram },
+      }));
+    } catch (err) { next(err); }
+  },
+
+  /** GET /api/notifications/telegram-updates — obtener chatIds de nuevos usuarios */
+  async getTelegramUpdates(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!TelegramService.isConfigured()) {
+        throw new AppError('Telegram no configurado.', 400);
+      }
+      const updates = await TelegramService.getUpdates();
+      res.json(successResponse(updates));
+    } catch (err) { next(err); }
+  },
+};
