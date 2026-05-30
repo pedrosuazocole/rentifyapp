@@ -66,9 +66,9 @@ export const tenantsController = {
   /** POST /api/tenants */
   async create(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { firstName, lastName, email, phone, nationalId, altAddress, notes, telegramChatId } = req.body;
+      const { firstName, lastName, email, phone, nationalId, altAddress, notes, telegramChatId, callMeBotApiKey } = req.body;
       const tenant = await prisma.tenant.create({
-        data: { firstName, lastName, email, phone, nationalId, altAddress, notes, telegramChatId },
+        data: { firstName, lastName, email, phone, nationalId, altAddress, notes, telegramChatId, callMeBotApiKey },
       });
       res.status(201).json(successResponse(tenant, 'Inquilino registrado correctamente.'));
     } catch (err) { next(err); }
@@ -80,10 +80,10 @@ export const tenantsController = {
       const exists = await prisma.tenant.findUnique({ where: { id: req.params.id } });
       if (!exists) throw new AppError('Inquilino no encontrado.', 404);
 
-      const { firstName, lastName, email, phone, nationalId, altAddress, notes, isActive, telegramChatId } = req.body;
+      const { firstName, lastName, email, phone, nationalId, altAddress, notes, isActive, telegramChatId, callMeBotApiKey } = req.body;
       const tenant = await prisma.tenant.update({
         where: { id: req.params.id },
-        data: { firstName, lastName, email, phone, nationalId, altAddress, notes, isActive, telegramChatId },
+        data: { firstName, lastName, email, phone, nationalId, altAddress, notes, isActive, telegramChatId, callMeBotApiKey },
       });
       res.json(successResponse(tenant, 'Inquilino actualizado.'));
     } catch (err) { next(err); }

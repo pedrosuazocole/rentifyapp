@@ -780,6 +780,11 @@ function openEditTenant(id, fullName, email, phone, nationalId, altAddress, note
           <input id="edit-ten-telegram" class="form-control td-mono" placeholder="Ej: 123456789">
           <div class="form-hint">Obtené el Chat ID en Notificaciones → "Ver usuarios que escribieron al bot"</div>
         </div>
+        <div class="form-group">
+          <label class="form-label">📱 CallMeBot API Key (WhatsApp)</label>
+          <input id="edit-ten-callmebot" class="form-control td-mono" placeholder="Ej: 1234567">
+          <div class="form-hint">El inquilino envía <strong>"I allow callmebot to send me messages"</strong> al +34 644 61 43 97 en WhatsApp y recibe su API Key</div>
+        </div>
       </div>
       <div class="modal-footer">
         <button class="btn btn-ghost" onclick="closeModal('modal-edit-tenant');document.getElementById('modal-edit-tenant').remove()">Cancelar</button>
@@ -792,15 +797,16 @@ function openEditTenant(id, fullName, email, phone, nationalId, altAddress, note
 }
 
 async function submitEditTenant() {
-  const id             = document.getElementById('edit-ten-id')?.value;
-  const firstName      = document.getElementById('edit-ten-firstname')?.value?.trim();
-  const lastName       = document.getElementById('edit-ten-lastname')?.value?.trim();
-  const phone          = document.getElementById('edit-ten-phone')?.value?.trim();
-  const nationalId     = document.getElementById('edit-ten-dni')?.value?.trim();
-  const email          = document.getElementById('edit-ten-email')?.value?.trim();
-  const altAddress     = document.getElementById('edit-ten-address')?.value?.trim();
-  const notes          = document.getElementById('edit-ten-notes')?.value?.trim();
-  const telegramChatId = document.getElementById('edit-ten-telegram')?.value?.trim();
+  const id               = document.getElementById('edit-ten-id')?.value;
+  const firstName        = document.getElementById('edit-ten-firstname')?.value?.trim();
+  const lastName         = document.getElementById('edit-ten-lastname')?.value?.trim();
+  const phone            = document.getElementById('edit-ten-phone')?.value?.trim();
+  const nationalId       = document.getElementById('edit-ten-dni')?.value?.trim();
+  const email            = document.getElementById('edit-ten-email')?.value?.trim();
+  const altAddress       = document.getElementById('edit-ten-address')?.value?.trim();
+  const notes            = document.getElementById('edit-ten-notes')?.value?.trim();
+  const telegramChatId   = document.getElementById('edit-ten-telegram')?.value?.trim();
+  const callMeBotApiKey  = document.getElementById('edit-ten-callmebot')?.value?.trim();
 
   if (!firstName || !lastName || !phone) { toast('Nombre, apellido y teléfono son requeridos.', 'warning'); return; }
   if (!/^\+504\d{8}$/.test(phone)) { toast('El teléfono debe ser +504XXXXXXXX.', 'warning'); return; }
@@ -814,6 +820,7 @@ async function submitEditTenant() {
       altAddress:      altAddress      || undefined,
       notes:           notes           || undefined,
       telegramChatId:  telegramChatId  || undefined,
+      callMeBotApiKey: callMeBotApiKey || undefined,
     }),
   });
 
@@ -1538,9 +1545,9 @@ async function renderNotifications() {
         <div class="stat-label">Recordatorios próximos</div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon ${(stats.tenantsWithoutTelegram || 0) > 0 ? 'red' : 'green'}"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
-        <div class="stat-value">${stats.tenantsWithoutTelegram || 0}</div>
-        <div class="stat-label">Inquilinos sin Telegram</div>
+        <div class="stat-icon ${(stats.tenantsWithoutNotif || 0) > 0 ? 'red' : 'green'}"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
+        <div class="stat-value">${stats.tenantsWithoutNotif || 0}</div>
+        <div class="stat-label">Sin ningún canal configurado</div>
       </div>
     </div>
 
@@ -1593,7 +1600,7 @@ async function renderNotifications() {
 
       <div>
         <div class="card" style="margin-bottom:16px">
-          <div class="card-header"><span class="card-title">🔍 Obtener Chat IDs</span></div>
+          <div class="card-header"><span class="card-title">🔍 Obtener Chat IDs Telegram</span></div>
           <p class="text-muted" style="margin-bottom:12px;font-size:0.83rem">
             Cuando un inquilino escribe <strong>/start</strong> al bot, su Chat ID queda registrado aquí.
           </p>
@@ -1604,19 +1611,56 @@ async function renderNotifications() {
           <div id="telegram-updates"></div>
         </div>
 
+        <!-- Prueba de envío -->
         <div class="card" style="margin-bottom:16px">
           <div class="card-header"><span class="card-title">🧪 Prueba de envío</span></div>
-          <div class="form-group">
-            <label class="form-label">Chat ID de Telegram</label>
-            <input id="test-chat-id" class="form-control td-mono" placeholder="Ej: 123456789">
-            <div class="form-hint">Obtené el ID con el botón de arriba o desde el perfil del inquilino</div>
+          <div class="tabs" style="margin-bottom:12px">
+            <button class="tab-btn active" onclick="switchTestTab('telegram',this)">📨 Telegram</button>
+            <button class="tab-btn" onclick="switchTestTab('callmebot',this)">📱 WhatsApp</button>
           </div>
-          <button class="btn ${tgOk ? 'btn-primary' : 'btn-ghost'}" style="width:100%"
-            onclick="sendTestNotification()" ${!tgOk ? 'disabled' : ''}>
-            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-            ${tgOk ? 'Enviar mensaje de prueba' : 'Configurá el bot primero'}
-          </button>
+          <div id="test-tab-telegram">
+            <div class="form-group">
+              <label class="form-label">Chat ID de Telegram</label>
+              <input id="test-chat-id" class="form-control td-mono" placeholder="Ej: 123456789">
+            </div>
+            <button class="btn ${tgOk ? 'btn-primary' : 'btn-ghost'}" style="width:100%"
+              onclick="sendTestNotification('telegram')" ${!tgOk ? 'disabled' : ''}>
+              <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              ${tgOk ? 'Enviar por Telegram' : 'Configurá el bot primero'}
+            </button>
+          </div>
+          <div id="test-tab-callmebot" style="display:none">
+            <div class="alert alert-info" style="margin-bottom:12px;font-size:0.8rem">
+              El inquilino envía <strong>"I allow callmebot to send me messages"</strong> al <strong>+34 644 61 43 97</strong> en WhatsApp y recibe su API Key personal.
+            </div>
+            <div class="form-group">
+              <label class="form-label">Número WhatsApp (+504XXXXXXXX)</label>
+              <input id="test-cmb-phone" class="form-control td-mono" placeholder="+50499887766">
+            </div>
+            <div class="form-group">
+              <label class="form-label">API Key de CallMeBot</label>
+              <input id="test-cmb-apikey" class="form-control td-mono" placeholder="Ej: 1234567">
+            </div>
+            <button class="btn btn-primary" style="width:100%" onclick="sendTestNotification('callmebot')">
+              <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Enviar por WhatsApp
+            </button>
+          </div>
           <div id="test-result" style="margin-top:12px"></div>
+        </div>
+
+        <!-- Números CC adicionales -->
+        <div class="card" style="margin-bottom:16px">
+          <div class="card-header"><span class="card-title">📋 Números CC adicionales</span></div>
+          <p class="text-muted" style="margin-bottom:12px;font-size:0.82rem">
+            Estas personas reciben copia de <strong>todas</strong> las notificaciones (dueños, contadores, administradores).
+          </p>
+          <div class="form-group">
+            <label class="form-label">Chat IDs de Telegram (separados por coma)</label>
+            <input id="cfg-ccNumbers" class="form-control td-mono" placeholder="123456789,987654321"
+              value="${cfg.ccNumbers || ''}">
+            <div class="form-hint">Para WhatsApp usá el formato <code>+504XXXXXXXX:apikey</code> — Ej: <code>+50499887766:1234567</code></div>
+          </div>
         </div>
 
         <div class="card">
@@ -1693,28 +1737,35 @@ function copyToClipboard(text) {
   navigator.clipboard.writeText(text).then(function() { toast('Chat ID copiado: ' + text); });
 }
 
-async function sendTestNotification() {
-  const chatId = document.getElementById('test-chat-id')?.value?.trim();
-  if (!chatId) { toast('Ingresá un Chat ID de Telegram.', 'warning'); return; }
+function switchTestTab(tab, btn) {
+  document.querySelectorAll('[id^="test-tab-"]').forEach(el => el.style.display = 'none');
+  document.getElementById('test-tab-' + tab).style.display = 'block';
+  document.querySelectorAll('.card .tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('test-result').innerHTML = '';
+}
 
-  const btn = document.querySelector('[onclick="sendTestNotification()"]');
-  if (btn) { btn.disabled = true; btn.textContent = 'Enviando...'; }
-
-  const res = await apiFetch('/notifications/test', {
-    method: 'POST',
-    body: JSON.stringify({ chatId }),
-  });
-
+async function sendTestNotification(channel) {
   const resultEl = document.getElementById('test-result');
-  if (resultEl) {
-    resultEl.innerHTML = (res?.data?.success)
-      ? '<div class="alert alert-success">✅ Mensaje enviado. ID: <code>' + (res.data.messageId || '—') + '</code></div>'
-      : '<div class="alert alert-danger">❌ ' + (res?.message || 'No se pudo enviar') + '</div>';
+  let body = {};
+
+  if (channel === 'callmebot') {
+    const phone  = document.getElementById('test-cmb-phone')?.value?.trim();
+    const apiKey = document.getElementById('test-cmb-apikey')?.value?.trim();
+    if (!phone || !apiKey) { toast('Ingresá el número y la API Key de CallMeBot.', 'warning'); return; }
+    body = { phone, apiKey, channel: 'callmebot' };
+  } else {
+    const chatId = document.getElementById('test-chat-id')?.value?.trim();
+    if (!chatId) { toast('Ingresá un Chat ID de Telegram.', 'warning'); return; }
+    body = { chatId, channel: 'telegram' };
   }
 
-  if (btn) {
-    btn.disabled = false;
-    btn.innerHTML = '<svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Enviar mensaje de prueba';
+  const res = await apiFetch('/notifications/test', { method: 'POST', body: JSON.stringify(body) });
+
+  if (resultEl) {
+    resultEl.innerHTML = res?.data?.success
+      ? '<div class="alert alert-success">✅ ' + (res.message || 'Mensaje enviado correctamente') + '</div>'
+      : '<div class="alert alert-danger">❌ ' + (res?.message || 'No se pudo enviar') + '</div>';
   }
   loadNotificationLogs();
 }

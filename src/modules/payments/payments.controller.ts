@@ -5,6 +5,7 @@ import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse, paginatedResponse } from '../../types';
 import { ExchangeRateService } from '../../services/exchange-rate.service';
 import { TelegramService } from '../../services/telegram.service';
+import { CallMeBotService } from '../../services/callmebot.service';
 import { PdfService } from '../../services/pdf.service';
 import { calcLateFee, addMoney, convertUSDtoHNL, convertHNLtoUSD, toNumber } from '../../utils/money';
 import { env } from '../../config/env';
@@ -201,27 +202,37 @@ export const paymentsController = {
 
           // URL del recibo
           const receiptUrl = `${env.APP_URL}/api/payments/${updated.id}/receipt`;
-
-          // Enviar por Telegram si el inquilino tiene chatId configurado
           const tenant = updated.contract.tenant;
-          if (tenant.telegramChatId) {
-            const tgResult = await TelegramService.sendPaymentReceipt({
-              chatId: tenant.telegramChatId,
-              tenantName: `${tenant.firstName} ${tenant.lastName}`,
-              propertyUnit: `${updated.contract.unit.property.name} — ${updated.contract.unit.number}`,
-              amount: amountPaidNum,
-              currency: paymentCurrency,
-              receiptNumber: updated.receiptNumber,
-              receiptUrl,
-              paymentDate: paidDate,
-            });
+          const receiptParams = {
+            tenantName:    `${tenant.firstName} ${tenant.lastName}`,
+            propertyUnit:  `${updated.contract.unit.property.name} — ${updated.contract.unit.number}`,
+            amount:        amountPaidNum,
+            currency:      paymentCurrency,
+            receiptNumber: updated.receiptNumber,
+            receiptUrl,
+            paymentDate:   paidDate,
+          };
 
-            if (tgResult.success) {
-              await prisma.payment.update({
-                where: { id: updated.id },
-                data: { receiptSentAt: new Date(), receiptPdfUrl: receiptUrl },
-              });
-            }
+          let notified = false;
+
+          // Telegram
+          if (tenant.telegramChatId) {
+            const r = await TelegramService.sendPaymentReceipt({ chatId: tenant.telegramChatId, ...receiptParams });
+            if (r.success) notified = true;
+          }
+
+          // CallMeBot (WhatsApp)
+          if (tenant.callMeBotApiKey) {
+            await new Promise(res => setTimeout(res, 400)); // respetar límite 3/min
+            const r = await CallMeBotService.sendPaymentReceipt({ phone: tenant.phone, apiKey: tenant.callMeBotApiKey, ...receiptParams });
+            if (r.success) notified = true;
+          }
+
+          if (notified) {
+            await prisma.payment.update({
+              where: { id: updated.id },
+              data: { receiptSentAt: new Date(), receiptPdfUrl: receiptUrl },
+            });
           }
 
           void pdfBuffer;

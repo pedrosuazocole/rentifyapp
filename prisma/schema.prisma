@@ -149,7 +149,8 @@ model Tenant {
   altAddress String?
   notes      String?
   isActive   Boolean    @default(true)
-  telegramChatId String? // Chat ID de Telegram del inquilino
+  telegramChatId  String? // Chat ID de Telegram del inquilino
+  callMeBotApiKey String? // API Key personal de CallMeBot (WhatsApp)
   contracts  Contract[]
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt

@@ -4,15 +4,14 @@ import { prisma } from '../../config/database';
 import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse } from '../../types';
 import { TelegramService } from '../../services/telegram.service';
+import { CallMeBotService } from '../../services/callmebot.service';
 
 export const notificationsController = {
   /** GET /api/notifications/config */
   async getConfig(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       let config = await prisma.notificationConfig.findFirst({ where: { companyId: null } });
-      if (!config) {
-        config = await prisma.notificationConfig.create({ data: {} });
-      }
+      if (!config) config = await prisma.notificationConfig.create({ data: {} });
       const telegramConfigured = TelegramService.isConfigured();
       const botInfo = telegramConfigured ? await TelegramService.getMe() : null;
       res.json(successResponse({ ...config, telegramConfigured, botUsername: botInfo?.username }));
@@ -53,35 +52,29 @@ export const notificationsController = {
     } catch (err) { next(err); }
   },
 
-  /** POST /api/notifications/test — enviar mensaje de prueba por Telegram */
+  /** POST /api/notifications/test — prueba Telegram o CallMeBot */
   async sendTest(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { chatId } = req.body;
-      if (!chatId) throw new AppError('El Chat ID de Telegram es requerido.', 400);
+      const { chatId, phone, apiKey, channel } = req.body;
 
-      if (!TelegramService.isConfigured()) {
-        throw new AppError(
-          'Telegram no está configurado. Agregá TELEGRAM_BOT_TOKEN en Railway → Variables.',
-          400
-        );
+      if (channel === 'callmebot' || (!chatId && phone && apiKey)) {
+        // Prueba CallMeBot
+        if (!phone || !apiKey) throw new AppError('Número y API Key son requeridos para CallMeBot.', 400);
+        const result = await CallMeBotService.sendTest(phone, apiKey);
+        await prisma.notificationLog.create({
+          data: { type: 'TEST', status: result.success ? 'SENT' : 'FAILED', toPhone: phone, tenantName: 'Prueba CallMeBot', message: '🧪 Prueba CallMeBot', errorMessage: result.error },
+        });
+        res.json(successResponse(result, result.success ? '✅ Mensaje WhatsApp enviado.' : `❌ ${result.error}`));
+      } else {
+        // Prueba Telegram (default)
+        if (!chatId) throw new AppError('El Chat ID de Telegram es requerido.', 400);
+        if (!TelegramService.isConfigured()) throw new AppError('Agregá TELEGRAM_BOT_TOKEN en Railway → Variables.', 400);
+        const result = await TelegramService.sendTest(chatId);
+        await prisma.notificationLog.create({
+          data: { type: 'TEST', status: result.success ? 'SENT' : 'FAILED', toPhone: chatId, tenantName: 'Prueba Telegram', message: '🧪 Prueba Telegram', errorMessage: result.error },
+        });
+        res.json(successResponse(result, result.success ? '✅ Mensaje Telegram enviado.' : `❌ ${result.error}`));
       }
-
-      const result = await TelegramService.sendTest(chatId);
-
-      await prisma.notificationLog.create({
-        data: {
-          type: 'TEST',
-          status: result.success ? 'SENT' : 'FAILED',
-          toPhone: chatId,
-          tenantName: 'Mensaje de prueba',
-          message: '🧪 Mensaje de prueba desde Rentify App',
-          errorMessage: result.error,
-        },
-      });
-
-      res.json(successResponse(result,
-        result.success ? '✅ Mensaje enviado correctamente.' : `❌ Error: ${result.error}`
-      ));
     } catch (err) { next(err); }
   },
 
@@ -93,16 +86,13 @@ export const notificationsController = {
       const type   = req.query.type as string;
       const status = req.query.status as string;
       const skip   = (page - 1) * limit;
-
       const where: Record<string, unknown> = {};
       if (type)   where.type   = type;
       if (status) where.status = status;
-
       const [logs, total] = await Promise.all([
         prisma.notificationLog.findMany({ where, orderBy: { sentAt: 'desc' }, skip, take: limit }),
         prisma.notificationLog.count({ where }),
       ]);
-
       res.json(successResponse({ logs, total, page, totalPages: Math.ceil(total / limit) }));
     } catch (err) { next(err); }
   },
@@ -123,38 +113,36 @@ export const notificationsController = {
     try {
       const telegramConfigured = TelegramService.isConfigured();
       const botInfo = telegramConfigured ? await TelegramService.getMe() : null;
-
       const [totalSent, totalFailed, lastSent] = await Promise.all([
         prisma.notificationLog.count({ where: { status: 'SENT' } }),
         prisma.notificationLog.count({ where: { status: 'FAILED' } }),
         prisma.notificationLog.findFirst({ orderBy: { sentAt: 'desc' }, where: { status: 'SENT' } }),
       ]);
-
       const in3days = new Date();
       in3days.setDate(in3days.getDate() + 3);
       const nextReminders = await prisma.payment.count({
         where: { status: 'PENDING', dueDate: { gte: new Date(), lte: in3days } },
       });
-
-      // Inquilinos sin Telegram configurado
-      const tenantsWithoutTelegram = await prisma.tenant.count({
-        where: { isActive: true, telegramChatId: null },
+      const tenantsWithoutNotif = await prisma.tenant.count({
+        where: { isActive: true, telegramChatId: null, callMeBotApiKey: null },
       });
-
+      const tenantsWithCallMeBot = await prisma.tenant.count({
+        where: { isActive: true, callMeBotApiKey: { not: null } },
+      });
+      const tenantsWithTelegram = await prisma.tenant.count({
+        where: { isActive: true, telegramChatId: { not: null } },
+      });
       res.json(successResponse({
-        telegramConfigured,
-        botUsername: botInfo?.username,
-        stats: { totalSent, totalFailed, lastSentAt: lastSent?.sentAt || null, nextReminders, tenantsWithoutTelegram },
+        telegramConfigured, botUsername: botInfo?.username,
+        stats: { totalSent, totalFailed, lastSentAt: lastSent?.sentAt || null, nextReminders, tenantsWithoutNotif, tenantsWithTelegram, tenantsWithCallMeBot },
       }));
     } catch (err) { next(err); }
   },
 
-  /** GET /api/notifications/telegram-updates — obtener chatIds de nuevos usuarios */
+  /** GET /api/notifications/telegram-updates */
   async getTelegramUpdates(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      if (!TelegramService.isConfigured()) {
-        throw new AppError('Telegram no configurado.', 400);
-      }
+      if (!TelegramService.isConfigured()) throw new AppError('Telegram no configurado.', 400);
       const updates = await TelegramService.getUpdates();
       res.json(successResponse(updates));
     } catch (err) { next(err); }
