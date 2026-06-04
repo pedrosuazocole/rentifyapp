@@ -2,7 +2,7 @@
 import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AppError } from '../../middlewares/error.middleware';
-import { AuthenticatedRequest, successResponse, paginatedResponse } from '../../types';
+import { AuthenticatedRequest, successResponse, paginatedResponse, errorResponse } from '../../types';
 import { ExchangeRateService } from '../../services/exchange-rate.service';
 import { TelegramService } from '../../services/telegram.service';
 import { CallMeBotService } from '../../services/callmebot.service';
