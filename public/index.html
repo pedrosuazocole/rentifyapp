@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Rentify App — Sistema de Control de Alquileres Honduras">
+  <title>Rentify App</title>
+
+  <!-- Favicon inline -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏠</text></svg>">
+  <!-- Permitir scripts inline (requerido por la arquitectura SPA) -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https: data:">
+
+  <!-- Estilos -->
+  <link rel="stylesheet" href="/css/main.css">
+</head>
+<body>
+  <!-- El JavaScript renderiza toda la app aquí -->
+  <div id="app">
+    <!-- Estado de carga inicial -->
+    <div style="
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: #F5F4F0;
+      font-family: 'DM Sans', sans-serif;
+      gap: 16px;
+    ">
+      <div style="font-size: 2.5rem;">🏠</div>
+      <div style="font-size: 1rem; font-weight: 600; color: #1a1916;">Rentify App</div>
+      <div style="
+        width: 24px; height: 24px;
+        border: 2px solid #E2E0D8;
+        border-top-color: #1A4B3A;
+        border-radius: 50%;
+        animation: spin 0.7s linear infinite;
+      "></div>
+    </div>
+    <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
+  </div>
+
+  <!-- Contenedor de toasts -->
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- App JavaScript -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
