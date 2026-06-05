@@ -4,9 +4,6 @@ import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse } from '../../types';
-import { CallMeBotService } from '../../services/callmebot.service';
-import { toNumber } from '../../utils/money';
-import { Currency } from '../../types';
 
 // Tipos de servicio disponibles
 export const SERVICE_TYPES: Record<string, string> = {
@@ -273,7 +270,89 @@ export const debitNotesController = {
     } catch (err) { next(err); }
   },
 
-  /** GET /api/debit-notes/service-types — catálogo de tipos de servicio */
+  /** POST /api/debit-notes/:id/register-payment — registrar cobro de la nota */
+  async registerPayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const note = await prisma.debitNote.findUnique({
+        where: { id: req.params.id },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+
+      if (!note) throw new AppError('Nota de débito no encontrada.', 404);
+      if (note.status === 'CANCELLED')  throw new AppError('No se puede cobrar una nota anulada.', 400);
+      if (note.status === 'INCLUDED')   throw new AppError('Esta nota ya fue cobrada.', 400);
+
+      const { paymentDate, notes: payNotes } = req.body;
+
+      // Marcar la nota como cobrada
+      const updated = await prisma.debitNote.update({
+        where: { id: note.id },
+        data: {
+          status:    'INCLUDED',
+          notes:     payNotes || note.notes,
+          updatedAt: new Date(),
+        },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+
+      // Enviar notificación por CallMeBot si el inquilino tiene API Key
+      const { tenant, unit } = updated.contract;
+      if (tenant.callMeBotApiKey) {
+        try {
+          const { CallMeBotService } = await import('../../services/callmebot.service');
+          const { toNumber } = await import('../../utils/money');
+          const MONTHS_ES = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+          const SERVICE_ICONS: Record<string,string> = { AGUA:'💧', LUZ:'⚡', GAS:'🔥', INTERNET:'🌐', BASURA:'🗑️', OTRO:'📋' };
+          const icono  = SERVICE_ICONS[note.serviceType] || '📋';
+          const periodo = `${MONTHS_ES[note.periodMonth]} ${note.periodYear}`;
+          const monto   = parseFloat(note.amount.toString()).toLocaleString('es-HN', { minimumFractionDigits: 2 });
+
+          await CallMeBotService.send(
+            tenant.phone,
+            tenant.callMeBotApiKey as string,
+            `${icono} *Rentify App — Cargo Cobrado*\n\n` +
+            `Hola *${tenant.firstName} ${tenant.lastName}*, tu cargo de servicio fue registrado como cobrado.\n\n` +
+            `📍 Unidad: ${unit.property.name} — ${unit.number}\n` +
+            `📅 Período: ${periodo}\n` +
+            `🔖 Servicio: ${note.description}\n` +
+            `💰 Monto cobrado: *${monto} ${note.currency}*\n\n` +
+            `Gracias por tu pago. 🙏`
+          );
+
+          void toNumber; // suprimir unused warning
+
+          await prisma.notificationLog.create({
+            data: {
+              type:       'RECEIPT',
+              status:     'SENT',
+              toPhone:    tenant.phone,
+              tenantName: `${tenant.firstName} ${tenant.lastName}`,
+              message:    `Nota débito cobrada — ${note.serviceType} — ${note.description}`,
+              contractId: note.contractId,
+            },
+          });
+        } catch (notifErr) {
+          console.error('⚠️ Error enviando notificación de cobro:', notifErr);
+        }
+      }
+
+      res.json(successResponse(updated, '✅ Nota de débito registrada como cobrada.'));
+    } catch (err) { next(err); }
+  },
   async getServiceTypes(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       res.json(successResponse(SERVICE_TYPES));
