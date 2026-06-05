@@ -1185,7 +1185,7 @@ async function viewContractDetail(id) {
                     <td class="td-mono" style="color:var(--c-danger)">${p.lateFeeAmount > 0 ? formatMoney(p.lateFeeAmount, c.currency) : '—'}</td>
                     <td>${paymentStatusBadge(p.status)}</td>
                     <td>${formatDate(p.paymentDate)}</td>
-                    <td>${p.status === 'PAID' ? `<a href="/api/payments/${p.id}/receipt" target="_blank" class="btn btn-ghost btn-sm">PDF</a>` : '—'}</td>
+                    <td>${p.status === 'PAID' ? `<button class="btn btn-ghost btn-sm" onclick="openPdfWithAuth('/api/payments/${p.id}/receipt')">PDF</button>` : '—'}</td>
                   </tr>`).join('')
               }
             </tbody>
@@ -1828,7 +1828,28 @@ function refreshPreview() {
 
 function downloadReceiptPdf() {
   if (!currentPrintData?.data?.receiptNumber) return;
-  window.open(`/api/payments/${currentPaymentId}/receipt`, '_blank');
+  openPdfWithAuth(`/api/payments/${currentPaymentId}/receipt`);
+}
+
+// Abre cualquier PDF autenticado en una nueva pestaña
+async function openPdfWithAuth(url) {
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${State.token}` },
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast(err.message || 'Error al generar el PDF.', 'danger');
+      return;
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    window.open(blobUrl, '_blank');
+    // Liberar memoria tras 60s
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+  } catch (e) {
+    toast('No se pudo abrir el PDF. Intentá de nuevo.', 'danger');
+  }
 }
 
 // ── Notificaciones ─────────────────────────────────────────────
@@ -2268,11 +2289,10 @@ async function renderDebitNotes() {
                   </td>
                   <td>
                     <div class="flex gap-2">
-                      <a href="/api/debit-notes/${n.id}/receipt" target="_blank"
-                        class="btn btn-ghost btn-sm" title="Ver e imprimir recibo">
+                      <button class="btn btn-ghost btn-sm" onclick="openPdfWithAuth('/api/debit-notes/${n.id}/receipt')" title="Ver e imprimir recibo">
                         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                         Imprimir
-                      </a>
+                      </button>
                       ${n.status==='PENDING' ? `
                         <button class="btn btn-ghost btn-sm" onclick="openEditDebitNote('${n.id}')">Editar</button>
                         <button class="btn btn-ghost btn-sm" style="color:var(--c-primary)" onclick="notifyDebitNote('${n.id}')">
