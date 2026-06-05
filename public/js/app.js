@@ -2295,11 +2295,15 @@ async function renderDebitNotes() {
                   </td>
                   <td>
                     <div class="flex gap-2">
-                      <button class="btn btn-ghost btn-sm" onclick="openPdfWithAuth('/api/debit-notes/${n.id}/receipt')" title="Ver e imprimir recibo">
+                      <button class="btn btn-ghost btn-sm" onclick="openPdfWithAuth('/api/debit-notes/${n.id}/receipt')" title="Imprimir recibo">
                         <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
                         Imprimir
                       </button>
                       ${n.status==='PENDING' ? `
+                        <button class="btn btn-primary btn-sm" onclick="registerDebitNotePayment('${n.id}')">
+                          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+                          Registrar cobro
+                        </button>
                         <button class="btn btn-ghost btn-sm" onclick="openEditDebitNote('${n.id}')">Editar</button>
                         <button class="btn btn-ghost btn-sm" style="color:var(--c-primary)" onclick="notifyDebitNote('${n.id}')">
                           <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -2614,6 +2618,81 @@ async function submitEditDebitNote() {
   toast('✅ Nota de débito actualizada.');
   closeModal('modal-edit-debit-note');
   document.getElementById('modal-edit-debit-note')?.remove();
+  renderDebitNotes();
+}
+
+async function registerDebitNotePayment(id) {
+  // Obtener la nota para mostrar los datos en la confirmación
+  const res = await apiFetch(`/debit-notes/${id}`);
+  const n   = res?.data;
+  if (!n) return;
+
+  const tenantName   = `${n.contract?.tenant?.firstName} ${n.contract?.tenant?.lastName}`;
+  const propertyUnit = `${n.contract?.unit?.property?.name} — ${n.contract?.unit?.number}`;
+  const monto        = formatMoney(parseFloat(n.amount), n.currency);
+
+  const existing = document.getElementById('modal-register-debit-payment');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-register-debit-payment';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Registrar cobro de nota de débito</span>
+        <button class="modal-close" onclick="closeModal('modal-register-debit-payment');document.getElementById('modal-register-debit-payment').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="rdn-id" value="${id}">
+        <div class="alert alert-info" style="margin-bottom:16px">
+          <div style="display:flex;flex-direction:column;gap:4px">
+            <div><strong>${tenantName}</strong> — ${propertyUnit}</div>
+            <div class="text-muted" style="font-size:0.83rem">${SERVICE_ICONS[n.serviceType]||'📋'} ${n.description}</div>
+            <div class="td-mono" style="font-size:1.1rem;font-weight:700;color:var(--c-primary)">${monto}</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de cobro</label>
+          <input id="rdn-date" class="form-control" type="date" value="${new Date().toISOString().split('T')[0]}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas del cobro</label>
+          <input id="rdn-notes" class="form-control" placeholder="Forma de pago, observaciones...">
+        </div>
+        <div class="alert" style="background:var(--c-success-lt);border:1px solid var(--c-success);font-size:0.82rem">
+          ✅ Al confirmar, la nota cambiará a estado <strong>Cobrada</strong> y se enviará notificación al inquilino por WhatsApp si tiene CallMeBot configurado.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-register-debit-payment');document.getElementById('modal-register-debit-payment').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="submitDebitNotePayment()">
+          <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
+          Confirmar cobro
+        </button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  openModal('modal-register-debit-payment');
+}
+
+async function submitDebitNotePayment() {
+  const id        = document.getElementById('rdn-id')?.value;
+  const payDate   = document.getElementById('rdn-date')?.value;
+  const notes     = document.getElementById('rdn-notes')?.value?.trim();
+
+  const res = await apiFetch(`/debit-notes/${id}/register-payment`, {
+    method: 'POST',
+    body: JSON.stringify({ paymentDate: payDate, notes: notes || undefined }),
+  });
+
+  if (res?.message) toast(res.message);
+  closeModal('modal-register-debit-payment');
+  document.getElementById('modal-register-debit-payment')?.remove();
   renderDebitNotes();
 }
 
@@ -3434,7 +3513,16 @@ function renderCxcResults(data) {
       if (isPending) clientTotal += totalHNL;
 
       const debitCell = dns.length > 0
-        ? `<span title="${dns.map(dn=>`${dn.serviceType}: ${fmtMon(dn.amount,dn.currency)}`).join(', ')}" style="cursor:help;border-bottom:1px dashed #888">${fmtL(dnTotal)} (${dns.length})</span>`
+        ? (() => {
+            const pending  = dns.filter(dn => dn.status === 'PENDING');
+            const included = dns.filter(dn => dn.status === 'INCLUDED');
+            const pendTotal = pending.reduce((s,dn) => s + parseFloat(dn.amount||0) * (dn.currency==='HNL'?1:bchRate), 0);
+            const inclTotal = included.reduce((s,dn) => s + parseFloat(dn.amount||0) * (dn.currency==='HNL'?1:bchRate), 0);
+            let cell = '';
+            if (pending.length > 0) cell += `<span title="${pending.map(dn=>`${dn.serviceType}: ${fmtMon(dn.amount,dn.currency)}`).join(', ')}" style="cursor:help;border-bottom:1px dashed var(--c-warning);color:var(--c-warning)">${fmtL(pendTotal)} (${pending.length} pend.)</span>`;
+            if (included.length > 0) cell += `${pending.length>0?' + ':''}<span title="${included.map(dn=>`${dn.serviceType}: ${fmtMon(dn.amount,dn.currency)}`).join(', ')}" style="cursor:help;color:var(--c-success,#22c55e);font-size:0.78rem">✓ ${fmtL(inclTotal)} (${included.length} cob.)</span>`;
+            return cell || '—';
+          })()
         : '—';
 
       // T/C solo si el contrato es en USD
