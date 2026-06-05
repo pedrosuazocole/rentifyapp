@@ -1393,6 +1393,7 @@ async function renderPayments(page = 1, status = '') {
               <td>
                 <div class="flex gap-2">
                   ${(p.status === 'PENDING' || p.status === 'LATE' || p.status === 'PARTIAL') ? `<button class="btn btn-primary btn-sm" onclick="openRegisterPayment('${p.id}')">Registrar pago</button>` : ''}
+                  <button class="btn btn-ghost btn-sm" onclick="openEditPayment('${p.id}')">Editar</button>
                   ${p.status === 'PAID' ? `<button class="btn btn-ghost btn-sm" onclick="previewReceipt('${p.id}')">Recibo</button>` : ''}
                 </div>
               </td>
@@ -1693,6 +1694,105 @@ async function submitPayment() {
     setTimeout(() => previewReceipt(currentPaymentId), 600);
   }
 
+  renderPayments();
+}
+
+async function openEditPayment(paymentId) {
+  const res = await apiFetch(`/payments/${paymentId}`);
+  const p   = res?.data;
+  if (!p) { toast('No se pudo cargar el pago.', 'danger'); return; }
+
+  const existing = document.getElementById('modal-edit-payment');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-edit-payment';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Editar pago</span>
+        <button class="modal-close" onclick="closeModal('modal-edit-payment');document.getElementById('modal-edit-payment').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-pay-id" value="${p.id}">
+
+        <div class="alert alert-info" style="margin-bottom:16px;font-size:0.83rem">
+          <strong>${p.contract?.tenant?.firstName} ${p.contract?.tenant?.lastName}</strong>
+          — ${p.contract?.unit?.property?.name} ${p.contract?.unit?.number}
+          — Período: <strong>${MONTHS_ES[p.periodMonth]} ${p.periodYear}</strong>
+        </div>
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Mes del período</label>
+            <select id="edit-pay-month" class="form-control">
+              ${MONTHS_ES.slice(1).map((m, i) => `<option value="${i+1}" ${i+1===p.periodMonth?'selected':''}>${m}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Año del período</label>
+            <input id="edit-pay-year" class="form-control" type="number" value="${p.periodYear}">
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Monto adeudado</label>
+            <input id="edit-pay-due" class="form-control td-mono" type="number" step="0.01" value="${parseFloat(p.amountDue).toFixed(2)}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fecha de vencimiento</label>
+            <input id="edit-pay-due-date" class="form-control" type="date" value="${p.dueDate?.split('T')[0] || ''}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Estado</label>
+          <select id="edit-pay-status" class="form-control">
+            <option value="PENDING"  ${p.status==='PENDING' ?'selected':''}>Pendiente</option>
+            <option value="PAID"     ${p.status==='PAID'    ?'selected':''}>Pagado</option>
+            <option value="PARTIAL"  ${p.status==='PARTIAL' ?'selected':''}>Parcial</option>
+            <option value="LATE"     ${p.status==='LATE'    ?'selected':''}>En mora</option>
+            <option value="WAIVED"   ${p.status==='WAIVED'  ?'selected':''}>Condonado</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas</label>
+          <input id="edit-pay-notes" class="form-control" placeholder="Observaciones..." value="${p.notes || ''}">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-edit-payment');document.getElementById('modal-edit-payment').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="submitEditPayment()">Guardar cambios</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  openModal('modal-edit-payment');
+}
+
+async function submitEditPayment() {
+  const id         = document.getElementById('edit-pay-id')?.value;
+  const periodMonth = parseInt(document.getElementById('edit-pay-month')?.value);
+  const periodYear  = parseInt(document.getElementById('edit-pay-year')?.value);
+  const amountDue   = parseFloat(document.getElementById('edit-pay-due')?.value);
+  const dueDate     = document.getElementById('edit-pay-due-date')?.value;
+  const status      = document.getElementById('edit-pay-status')?.value;
+  const notes       = document.getElementById('edit-pay-notes')?.value?.trim();
+
+  if (!amountDue || amountDue <= 0) { toast('El monto debe ser mayor a 0.', 'warning'); return; }
+
+  await apiFetch(`/payments/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ periodMonth, periodYear, amountDue, dueDate, status, notes: notes || undefined }),
+  });
+
+  toast('✅ Pago actualizado correctamente.');
+  closeModal('modal-edit-payment');
+  document.getElementById('modal-edit-payment')?.remove();
   renderPayments();
 }
 
