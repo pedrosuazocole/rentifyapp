@@ -2219,7 +2219,7 @@ async function renderDebitNotes() {
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Inquilino</th><th>Unidad</th><th>Servicios</th><th>Total HNL</th><th>Total USD</th></tr></thead>
+          <thead><tr><th>Inquilino</th><th>Unidad</th><th>Servicios</th><th>Total HNL</th><th>Total USD</th><th>Acciones</th></tr></thead>
           <tbody>
             ${(summary.contracts||[]).map(g => `<tr>
               <td><strong>${g.tenantName}</strong></td>
@@ -2227,6 +2227,12 @@ async function renderDebitNotes() {
               <td>${g.items.map(n => `<span class="badge badge-neutral" style="margin-right:4px">${SERVICE_ICONS[n.serviceType]||'📋'} ${SERVICE_LABELS[n.serviceType]||n.serviceType}</span>`).join('')}</td>
               <td class="td-mono">${g.totalHNL > 0 ? formatMoney(g.totalHNL,'HNL') : '—'}</td>
               <td class="td-mono">${g.totalUSD > 0 ? formatMoney(g.totalUSD,'USD') : '—'}</td>
+              <td>
+                <button class="btn btn-ghost btn-sm" onclick="printDebitNotesSummary('${g.contractId}','${g.tenantName.replace(/'/g,"\\'")}')" title="Imprimir estado de cuenta de notas de débito">
+                  <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+                  Imprimir
+                </button>
+              </td>
             </tr>`).join('')}
           </tbody>
         </table>
@@ -2620,6 +2626,154 @@ async function cancelDebitNote(id) {
   });
   toast('Nota de débito anulada.');
   renderDebitNotes();
+}
+
+async function printDebitNotesSummary(contractId, tenantName) {
+  const month = document.getElementById('dn-month')?.value || new Date().getMonth() + 1;
+  const year  = document.getElementById('dn-year')?.value  || new Date().getFullYear();
+
+  // Obtener las notas del contrato en el período
+  const res   = await apiFetch(`/debit-notes?contractId=${contractId}&month=${month}&year=${year}`);
+  const notes = res?.data || [];
+
+  if (notes.length === 0) { toast('Sin notas de débito en este período.', 'warning'); return; }
+
+  // Calcular totales
+  let totalHNL = 0, totalUSD = 0;
+  notes.forEach(n => {
+    if (n.currency === 'HNL') totalHNL += parseFloat(n.amount);
+    else totalUSD += parseFloat(n.amount);
+  });
+
+  const firstNote = notes[0];
+  const propertyUnit = `${firstNote.contract?.unit?.property?.name || ''} — ${firstNote.contract?.unit?.number || ''}`;
+  const periodo = `${MONTHS_ES[parseInt(month)]} ${year}`;
+
+  // Generar HTML de impresión
+  const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Estado de Cuenta — Notas de Débito</title>
+  <style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body { font-family: Arial, sans-serif; font-size: 12px; color: #333; padding: 30px; }
+    .header { background: #1A4B3A; color: white; padding: 20px 24px; border-radius: 8px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; }
+    .header h1 { font-size: 22px; font-weight: 900; }
+    .header h1 span { color: #F5A623; }
+    .header .sub { font-size: 10px; opacity: 0.7; letter-spacing: 2px; text-transform: uppercase; margin-top: 2px; }
+    .header .doctype { text-align: right; }
+    .header .doctype div { font-size: 13px; font-weight: bold; color: #F5A623; }
+    .info-box { background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 6px; padding: 14px 18px; margin-bottom: 16px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .info-box .label { color: #888; font-size: 10px; text-transform: uppercase; }
+    .info-box .value { font-weight: 600; font-size: 12px; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
+    thead tr { background: #1A4B3A; color: white; }
+    th { padding: 9px 12px; text-align: left; font-size: 10px; text-transform: uppercase; font-weight: 600; }
+    td { padding: 9px 12px; border-bottom: 1px solid #eee; font-size: 11px; }
+    tr:nth-child(even) td { background: #fafafa; }
+    .amount { text-align: right; font-family: monospace; font-weight: 600; }
+    .status { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+    .status-pending { background: #fff3cd; color: #856404; }
+    .status-included { background: #d1e7dd; color: #0f5132; }
+    .status-cancelled { background: #f8d7da; color: #842029; }
+    .totals { background: #f0faf5; border: 2px solid #1A4B3A; border-radius: 6px; padding: 14px 18px; margin-bottom: 16px; }
+    .totals-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; }
+    .totals-row.main { border-top: 1px solid #1A4B3A; margin-top: 8px; padding-top: 8px; }
+    .totals-row.main .label { font-weight: 700; font-size: 13px; color: #1A4B3A; }
+    .totals-row.main .value { font-weight: 700; font-size: 14px; color: #1A4B3A; }
+    .footer { text-align: center; color: #aaa; font-size: 9px; margin-top: 20px; padding-top: 10px; border-top: 1px solid #eee; }
+    .notice { background: #fff8e8; border: 1px solid #F5A623; border-radius: 6px; padding: 10px 14px; font-size: 10px; color: #7a5800; margin-bottom: 16px; }
+    @media print { body { padding: 10px; } .no-print { display: none; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Rent<span>ify</span></h1>
+      <div class="sub">Sistema de Alquileres</div>
+    </div>
+    <div class="doctype">
+      <div>ESTADO DE CUENTA</div>
+      <div style="font-size:11px;color:rgba(255,255,255,0.8);margin-top:4px">Notas de Débito — ${periodo}</div>
+    </div>
+  </div>
+
+  <div class="info-box">
+    <div>
+      <div class="label">Inquilino</div>
+      <div class="value">${tenantName}</div>
+    </div>
+    <div>
+      <div class="label">Propiedad / Unidad</div>
+      <div class="value">${propertyUnit}</div>
+    </div>
+    <div>
+      <div class="label">Período</div>
+      <div class="value">${periodo}</div>
+    </div>
+    <div>
+      <div class="label">Total de cargos</div>
+      <div class="value">${notes.length} cargo(s)</div>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Servicio</th>
+        <th>Descripción</th>
+        <th>N° Factura</th>
+        <th>Fecha</th>
+        <th>Monto</th>
+        <th>Estado</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${notes.map((n, i) => `
+        <tr>
+          <td>${i + 1}</td>
+          <td>${SERVICE_ICONS[n.serviceType]||'📋'} ${SERVICE_LABELS[n.serviceType]||n.serviceType}</td>
+          <td>${n.description}</td>
+          <td>${n.invoiceRef || '—'}</td>
+          <td>${n.createdAt ? new Date(n.createdAt).toLocaleDateString('es-HN') : '—'}</td>
+          <td class="amount">${formatMoney(parseFloat(n.amount), n.currency)}</td>
+          <td>
+            <span class="status ${n.status==='PENDING'?'status-pending':n.status==='INCLUDED'?'status-included':'status-cancelled'}">
+              ${n.status==='PENDING'?'Pendiente':n.status==='INCLUDED'?'Cobrada':'Anulada'}
+            </span>
+          </td>
+        </tr>
+      `).join('')}
+    </tbody>
+  </table>
+
+  <div class="totals">
+    ${totalHNL > 0 ? `<div class="totals-row"><span class="label">Subtotal en Lempiras:</span><span class="value">${formatMoney(totalHNL,'HNL')}</span></div>` : ''}
+    ${totalUSD > 0 ? `<div class="totals-row"><span class="label">Subtotal en Dólares:</span><span class="value">${formatMoney(totalUSD,'USD')}</span></div>` : ''}
+    <div class="totals-row main">
+      <span class="label">TOTAL CARGOS DEL PERÍODO:</span>
+      <span class="value">${totalHNL > 0 ? formatMoney(totalHNL,'HNL') : ''} ${totalHNL > 0 && totalUSD > 0 ? '+' : ''} ${totalUSD > 0 ? formatMoney(totalUSD,'USD') : ''}</span>
+    </div>
+  </div>
+
+  <div class="notice">
+    ⚠️ Los cargos en estado <strong>Pendiente</strong> serán incluidos en su próximo cobro de alquiler. Para consultas comuníquese con su arrendador.
+  </div>
+
+  <div class="footer">
+    Documento generado por Rentify App · ${new Date().toLocaleString('es-HN')} · Sistema de Control de Alquileres Honduras
+  </div>
+
+  <script>window.onload = function() { window.print(); }</script>
+</body>
+</html>`;
+
+  const blob   = new Blob([html], { type: 'text/html;charset=utf-8' });
+  const url    = URL.createObjectURL(blob);
+  const win    = window.open(url, '_blank');
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 async function notifyDebitNote(id) {
