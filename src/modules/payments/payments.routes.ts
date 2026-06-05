@@ -12,6 +12,7 @@ router.get('/', paymentsController.list);
 router.get('/cxc-report', paymentsController.cxcReport);
 router.get('/report', paymentsController.report);
 router.get('/:id/receipt', paymentsController.downloadReceipt);
+router.get('/:id', paymentsController.getOne);
 
 router.post('/generate',
   authorize('ADMIN', 'OWNER'),
@@ -30,6 +31,12 @@ router.post('/create-manual',
   body('amountDue').optional().isFloat({ min: 0 }),
   validate,
   paymentsController.createManual
+);
+
+/** PUT /api/payments/:id — editar datos del pago */
+router.put('/:id',
+  authorize('ADMIN', 'OWNER'),
+  paymentsController.update
 );
 
 router.post('/:id/register',

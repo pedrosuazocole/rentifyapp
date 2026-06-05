@@ -534,4 +534,50 @@ export const paymentsController = {
       }));
     } catch (err) { next(err); }
   },
+
+  /** GET /api/payments/:id — obtener un pago por ID */
+  async getOne(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const payment = await prisma.payment.findUnique({
+        where: { id: req.params.id },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+      if (!payment) throw new AppError('Pago no encontrado.', 404);
+      res.json(successResponse(payment));
+    } catch (err) { next(err); }
+  },
+
+  /** PUT /api/payments/:id — editar datos del pago */
+  async update(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const { periodMonth, periodYear, amountDue, dueDate, status, notes } = req.body;
+
+      const payment = await prisma.payment.findUnique({ where: { id: req.params.id } });
+      if (!payment) throw new AppError('Pago no encontrado.', 404);
+
+      // No permitir editar un pago ya cobrado si se intenta volver a PENDING
+      // (solo advertencia — el admin puede forzarlo)
+
+      const updated = await prisma.payment.update({
+        where: { id: req.params.id },
+        data: {
+          ...(periodMonth !== undefined && { periodMonth: parseInt(periodMonth) }),
+          ...(periodYear  !== undefined && { periodYear:  parseInt(periodYear) }),
+          ...(amountDue   !== undefined && { amountDue:   parseFloat(amountDue) }),
+          ...(dueDate     !== undefined && dueDate && { dueDate: new Date(dueDate) }),
+          ...(status      !== undefined && { status }),
+          ...(notes       !== undefined && { notes }),
+        },
+      });
+
+      res.json(successResponse(updated, 'Pago actualizado correctamente.'));
+    } catch (err) { next(err); }
+  },
 };
