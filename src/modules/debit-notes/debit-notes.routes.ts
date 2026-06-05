@@ -13,6 +13,7 @@ router.use(authenticate);
 router.get('/service-types', debitNotesController.getServiceTypes);
 router.get('/summary',       debitNotesController.summary);
 router.get('/',              debitNotesController.list);
+router.get('/:id/receipt',   debitNotesController.downloadReceipt);
 router.get('/:id',           debitNotesController.getOne);
 
 // VIEWER (contador), OWNER y ADMIN pueden crear y editar

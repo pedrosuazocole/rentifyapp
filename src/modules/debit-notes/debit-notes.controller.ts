@@ -280,6 +280,48 @@ export const debitNotesController = {
     } catch (err) { next(err); }
   },
 
+  /** GET /api/debit-notes/:id/receipt — descargar PDF del recibo */
+  async downloadReceipt(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const note = await prisma.debitNote.findUnique({
+        where: { id: req.params.id },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+
+      if (!note) throw new AppError('Nota de débito no encontrada.', 404);
+
+      const { PdfService } = await import('../../services/pdf.service');
+      const buffer = await PdfService.generateDebitNoteReceipt({
+        noteId:       note.id,
+        tenantName:   `${note.contract.tenant.firstName} ${note.contract.tenant.lastName}`,
+        tenantPhone:  note.contract.tenant.phone,
+        propertyName: note.contract.unit.property.name,
+        unitNumber:   note.contract.unit.number,
+        periodMonth:  note.periodMonth,
+        periodYear:   note.periodYear,
+        serviceType:  note.serviceType,
+        description:  note.description,
+        amount:       parseFloat(note.amount.toString()),
+        currency:     note.currency as 'HNL' | 'USD',
+        invoiceRef:   note.invoiceRef || undefined,
+        invoiceDate:  note.invoiceDate || undefined,
+        notes:        note.notes || undefined,
+        issuedAt:     note.createdAt,
+      });
+
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `inline; filename="nota-debito-${note.id.slice(-8)}.pdf"`);
+      res.end(buffer);
+    } catch (err) { next(err); }
+  },
+
   /** POST /api/debit-notes/:id/notify — enviar notificación manual */
   async sendNotification(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
