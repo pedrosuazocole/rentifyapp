@@ -34,6 +34,12 @@ router.put('/:id',
   debitNotesController.update
 );
 
+// Registrar cobro — ADMIN, OWNER y VIEWER
+router.post('/:id/register-payment',
+  authorize('ADMIN', 'OWNER', 'VIEWER'),
+  debitNotesController.registerPayment
+);
+
 // Solo ADMIN y OWNER pueden anular
 router.post('/:id/cancel',
   authorize('ADMIN', 'OWNER'),

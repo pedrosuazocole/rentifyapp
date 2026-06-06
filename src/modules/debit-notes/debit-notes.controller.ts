@@ -4,6 +4,9 @@ import { Response, NextFunction } from 'express';
 import { prisma } from '../../config/database';
 import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse } from '../../types';
+import { CallMeBotService } from '../../services/callmebot.service';
+import { toNumber } from '../../utils/money';
+import { Currency } from '../../types';
 
 // Tipos de servicio disponibles
 export const SERVICE_TYPES: Record<string, string> = {
@@ -18,6 +21,7 @@ export const SERVICE_TYPES: Record<string, string> = {
 // ── Helper: enviar notificación de nota de débito ──────────────
 async function notifyDebitNote(noteId: string): Promise<void> {
   try {
+    // Verificar si las notificaciones de notas de débito están activas
     const config = await prisma.notificationConfig.findFirst({ where: { companyId: null } });
     if (config && config.debitNoteEnabled === false) return;
 
@@ -35,22 +39,19 @@ async function notifyDebitNote(noteId: string): Promise<void> {
 
     if (!note || !note.contract.tenant.callMeBotApiKey) return;
 
-    const { CallMeBotService } = await import('../../services/callmebot.service');
-    const { toNumber }         = await import('../../utils/money');
-
     const { tenant, unit } = note.contract;
     await CallMeBotService.sendDebitNoteNotice({
-      phone:        tenant.phone,
-      apiKey:       tenant.callMeBotApiKey as string,
-      tenantName:   `${tenant.firstName} ${tenant.lastName}`,
-      propertyUnit: `${unit.property.name} — ${unit.number}`,
-      serviceType:  note.serviceType,
-      description:  note.description,
-      amount:       toNumber(note.amount),
-      currency:     note.currency as 'HNL' | 'USD',
-      periodMonth:  note.periodMonth,
-      periodYear:   note.periodYear,
-      invoiceRef:   note.invoiceRef || undefined,
+      phone:       tenant.phone,
+      apiKey:      tenant.callMeBotApiKey as string,
+      tenantName:  `${tenant.firstName} ${tenant.lastName}`,
+      propertyUnit:`${unit.property.name} — ${unit.number}`,
+      serviceType: note.serviceType,
+      description: note.description,
+      amount:      toNumber(note.amount),
+      currency:    note.currency as Currency,
+      periodMonth: note.periodMonth,
+      periodYear:  note.periodYear,
+      invoiceRef:  note.invoiceRef || undefined,
     });
 
     // Guardar en el log
@@ -272,134 +273,10 @@ export const debitNotesController = {
     } catch (err) { next(err); }
   },
 
-  /** POST /api/debit-notes/:id/register-payment — registrar cobro de la nota */
-  async registerPayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const note = await prisma.debitNote.findUnique({
-        where: { id: req.params.id },
-        include: {
-          contract: {
-            include: {
-              tenant: true,
-              unit: { include: { property: true } },
-            },
-          },
-        },
-      });
-
-      if (!note) throw new AppError('Nota de débito no encontrada.', 404);
-      if (note.status === 'CANCELLED')  throw new AppError('No se puede cobrar una nota anulada.', 400);
-      if (note.status === 'INCLUDED')   throw new AppError('Esta nota ya fue cobrada.', 400);
-
-      const { paymentDate, notes: payNotes } = req.body;
-
-      // Marcar la nota como cobrada
-      const updated = await prisma.debitNote.update({
-        where: { id: note.id },
-        data: {
-          status:    'INCLUDED',
-          notes:     payNotes || note.notes,
-          updatedAt: new Date(),
-        },
-        include: {
-          contract: {
-            include: {
-              tenant: true,
-              unit: { include: { property: true } },
-            },
-          },
-        },
-      });
-
-      // Enviar notificación por CallMeBot si el inquilino tiene API Key
-      const { tenant, unit } = updated.contract;
-      if (tenant.callMeBotApiKey) {
-        try {
-          const { CallMeBotService } = await import('../../services/callmebot.service');
-          const { toNumber } = await import('../../utils/money');
-          const MONTHS_ES = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
-          const SERVICE_ICONS: Record<string,string> = { AGUA:'💧', LUZ:'⚡', GAS:'🔥', INTERNET:'🌐', BASURA:'🗑️', OTRO:'📋' };
-          const icono  = SERVICE_ICONS[note.serviceType] || '📋';
-          const periodo = `${MONTHS_ES[note.periodMonth]} ${note.periodYear}`;
-          const monto   = parseFloat(note.amount.toString()).toLocaleString('es-HN', { minimumFractionDigits: 2 });
-
-          await CallMeBotService.send(
-            tenant.phone,
-            tenant.callMeBotApiKey as string,
-            `${icono} *Rentify App — Cargo Cobrado*\n\n` +
-            `Hola *${tenant.firstName} ${tenant.lastName}*, tu cargo de servicio fue registrado como cobrado.\n\n` +
-            `📍 Unidad: ${unit.property.name} — ${unit.number}\n` +
-            `📅 Período: ${periodo}\n` +
-            `🔖 Servicio: ${note.description}\n` +
-            `💰 Monto cobrado: *${monto} ${note.currency}*\n\n` +
-            `Gracias por tu pago. 🙏`
-          );
-
-          void toNumber; // suprimir unused warning
-
-          await prisma.notificationLog.create({
-            data: {
-              type:       'RECEIPT',
-              status:     'SENT',
-              toPhone:    tenant.phone,
-              tenantName: `${tenant.firstName} ${tenant.lastName}`,
-              message:    `Nota débito cobrada — ${note.serviceType} — ${note.description}`,
-              contractId: note.contractId,
-            },
-          });
-        } catch (notifErr) {
-          console.error('⚠️ Error enviando notificación de cobro:', notifErr);
-        }
-      }
-
-      res.json(successResponse(updated, '✅ Nota de débito registrada como cobrada.'));
-    } catch (err) { next(err); }
-  },
+  /** GET /api/debit-notes/service-types — catálogo de tipos de servicio */
   async getServiceTypes(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       res.json(successResponse(SERVICE_TYPES));
-    } catch (err) { next(err); }
-  },
-
-  /** GET /api/debit-notes/:id/receipt — descargar PDF del recibo */
-  async downloadReceipt(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
-    try {
-      const note = await prisma.debitNote.findUnique({
-        where: { id: req.params.id },
-        include: {
-          contract: {
-            include: {
-              tenant: true,
-              unit: { include: { property: true } },
-            },
-          },
-        },
-      });
-
-      if (!note) throw new AppError('Nota de débito no encontrada.', 404);
-
-      const { PdfService } = await import('../../services/pdf.service');
-      const buffer = await PdfService.generateDebitNoteReceipt({
-        noteId:       note.id,
-        tenantName:   `${note.contract.tenant.firstName} ${note.contract.tenant.lastName}`,
-        tenantPhone:  note.contract.tenant.phone,
-        propertyName: note.contract.unit.property.name,
-        unitNumber:   note.contract.unit.number,
-        periodMonth:  note.periodMonth,
-        periodYear:   note.periodYear,
-        serviceType:  note.serviceType,
-        description:  note.description,
-        amount:       parseFloat(note.amount.toString()),
-        currency:     note.currency as 'HNL' | 'USD',
-        invoiceRef:   note.invoiceRef || undefined,
-        invoiceDate:  note.invoiceDate || undefined,
-        notes:        note.notes || undefined,
-        issuedAt:     note.createdAt,
-      });
-
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `inline; filename="nota-debito-${note.id.slice(-8)}.pdf"`);
-      res.end(buffer);
     } catch (err) { next(err); }
   },
 
@@ -420,9 +297,6 @@ export const debitNotesController = {
 
       if (!note) throw new AppError('Nota de débito no encontrada.', 404);
 
-      const { CallMeBotService } = await import('../../services/callmebot.service');
-      const { toNumber }         = await import('../../utils/money');
-
       const { tenant, unit } = note.contract;
 
       if (!tenant.callMeBotApiKey) {
@@ -441,7 +315,7 @@ export const debitNotesController = {
         serviceType:  note.serviceType,
         description:  note.description,
         amount:       toNumber(note.amount),
-        currency:     note.currency as 'HNL' | 'USD',
+        currency:     note.currency as Currency,
         periodMonth:  note.periodMonth,
         periodYear:   note.periodYear,
         invoiceRef:   note.invoiceRef || undefined,
@@ -466,6 +340,152 @@ export const debitNotesController = {
           ? `✅ Notificación enviada a ${tenant.firstName} ${tenant.lastName} (${tenant.phone})`
           : `❌ Error al enviar: ${result.error}`
       ));
+    } catch (err) { next(err); }
+  },
+
+  /** POST /api/debit-notes/:id/register-payment — registrar cobro */
+  async registerPayment(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const note = await prisma.debitNote.findUnique({
+        where: { id: req.params.id },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+
+      if (!note) throw new AppError('Nota de débito no encontrada.', 404);
+      if (note.status === 'CANCELLED') throw new AppError('No se puede cobrar una nota anulada.', 400);
+      if (note.status === 'INCLUDED')  throw new AppError('Esta nota ya fue cobrada.', 400);
+
+      const updated = await prisma.debitNote.update({
+        where: { id: note.id },
+        data: {
+          status:    'INCLUDED',
+          notes:     req.body.notes || note.notes,
+          updatedAt: new Date(),
+        },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+
+      // Notificación CallMeBot
+      const { tenant, unit } = updated.contract;
+      if (tenant.callMeBotApiKey) {
+        const MONTHS_ES = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+        const periodo = `${MONTHS_ES[note.periodMonth]} ${note.periodYear}`;
+        const monto   = toNumber(note.amount).toLocaleString('es-HN', { minimumFractionDigits: 2 });
+        const msg =
+          `✅ *Rentify App — Cargo Cobrado*\n\n` +
+          `Hola *${tenant.firstName} ${tenant.lastName}*, tu cargo fue registrado como cobrado.\n\n` +
+          `📍 Unidad: ${unit.property.name} — ${unit.number}\n` +
+          `📅 Período: ${periodo}\n` +
+          `🔖 Servicio: ${note.description}\n` +
+          `💰 Monto: *${monto} ${note.currency}*\n\n` +
+          `Gracias por tu pago. 🙏`;
+
+        CallMeBotService.send(tenant.phone, tenant.callMeBotApiKey as string, msg)
+          .catch(console.error);
+
+        prisma.notificationLog.create({
+          data: {
+            type: 'RECEIPT', status: 'SENT',
+            toPhone: tenant.phone,
+            tenantName: `${tenant.firstName} ${tenant.lastName}`,
+            message: `Nota débito cobrada — ${note.serviceType}`,
+            contractId: note.contractId,
+          },
+        }).catch(console.error);
+      }
+
+      res.json(successResponse(updated, '✅ Nota de débito registrada como cobrada.'));
+    } catch (err) { next(err); }
+  },
+
+  /** GET /api/debit-notes/:id/receipt — recibo HTML imprimible */
+  async downloadReceipt(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const note = await prisma.debitNote.findUnique({
+        where: { id: req.params.id },
+        include: {
+          contract: {
+            include: {
+              tenant: true,
+              unit: { include: { property: true } },
+            },
+          },
+        },
+      });
+
+      if (!note) throw new AppError('Nota de débito no encontrada.', 404);
+
+      const MONTHS_ES = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+      const SERVICE_LABELS: Record<string,string> = {
+        AGUA:'Agua (SANAA)', LUZ:'Energía Eléctrica (ENEE)',
+        GAS:'Gas', INTERNET:'Internet / Cable',
+        BASURA:'Recolección de Basura', OTRO:'Otro Cargo',
+      };
+
+      const { tenant, unit } = note.contract;
+      const periodo  = `${MONTHS_ES[note.periodMonth]} ${note.periodYear}`;
+      const servicio = SERVICE_LABELS[note.serviceType] || note.serviceType;
+      const monto    = toNumber(note.amount).toLocaleString('es-HN', { minimumFractionDigits: 2 });
+      const estado   = note.status === 'INCLUDED' ? 'Cobrada' : note.status === 'CANCELLED' ? 'Anulada' : 'Pendiente';
+      const fecha    = new Date(note.createdAt).toLocaleDateString('es-HN');
+
+      const html = `<!DOCTYPE html><html lang="es"><head><meta charset="UTF-8">
+<title>Nota de Débito — ${note.id.slice(-8).toUpperCase()}</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:Arial,sans-serif;font-size:13px;color:#333;padding:30px}
+.header{background:#1A4B3A;color:#fff;padding:18px 24px;border-radius:8px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:22px;font-weight:900}.header h1 span{color:#F5A623}
+.header .right{text-align:right;font-size:11px;opacity:.8}
+.box{background:#f8f8f8;border:1px solid #ddd;border-radius:6px;padding:14px 18px;margin-bottom:16px}
+.row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #eee}
+.row:last-child{border:none}
+.label{color:#888;font-size:11px}
+.value{font-weight:600}
+.total{background:#f0faf5;border:2px solid #1A4B3A;border-radius:6px;padding:14px 18px;display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.total .amount{font-size:18px;font-weight:900;color:#1A4B3A}
+.notice{background:#fff8e8;border:1px solid #F5A623;border-radius:6px;padding:10px 14px;font-size:11px;color:#7a5800;margin-bottom:16px}
+.footer{text-align:center;color:#aaa;font-size:9px;margin-top:16px;border-top:1px solid #eee;padding-top:10px}
+@media print{body{padding:10px}}
+</style></head><body>
+<div class="header">
+  <div><h1>Rent<span>ify</span></h1><div style="font-size:10px;opacity:.7;letter-spacing:2px">SISTEMA DE ALQUILERES</div></div>
+  <div class="right"><div style="font-size:13px;font-weight:bold;color:#F5A623">NOTA DE DÉBITO</div><div>N° ${note.id.slice(-8).toUpperCase()}</div><div>${fecha}</div></div>
+</div>
+<div class="box">
+  <div class="row"><span class="label">Inquilino</span><span class="value">${tenant.firstName} ${tenant.lastName}</span></div>
+  <div class="row"><span class="label">Propiedad / Unidad</span><span class="value">${unit.property.name} — ${unit.number}</span></div>
+  <div class="row"><span class="label">Período</span><span class="value">${periodo}</span></div>
+  <div class="row"><span class="label">Servicio</span><span class="value">${servicio}</span></div>
+  <div class="row"><span class="label">Descripción</span><span class="value">${note.description}</span></div>
+  ${note.invoiceRef ? `<div class="row"><span class="label">N° Factura servicio</span><span class="value">${note.invoiceRef}</span></div>` : ''}
+  <div class="row"><span class="label">Estado</span><span class="value">${estado}</span></div>
+</div>
+<div class="total">
+  <span style="font-weight:700;color:#1A4B3A">TOTAL A PAGAR</span>
+  <span class="amount">${note.currency} ${monto}</span>
+</div>
+<div class="notice">⚠️ Este cargo será incluido en su próximo cobro de alquiler. Para consultas comuníquese con su arrendador.</div>
+<div class="footer">Generado por Rentify App · ${new Date().toLocaleString('es-HN')}</div>
+<script>window.onload=function(){window.print()}</script>
+</body></html>`;
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
     } catch (err) { next(err); }
   },
 };
