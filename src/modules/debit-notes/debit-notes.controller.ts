@@ -18,7 +18,6 @@ export const SERVICE_TYPES: Record<string, string> = {
 // ── Helper: enviar notificación de nota de débito ──────────────
 async function notifyDebitNote(noteId: string): Promise<void> {
   try {
-    // Verificar si las notificaciones de notas de débito están activas
     const config = await prisma.notificationConfig.findFirst({ where: { companyId: null } });
     if (config && config.debitNoteEnabled === false) return;
 
@@ -36,19 +35,22 @@ async function notifyDebitNote(noteId: string): Promise<void> {
 
     if (!note || !note.contract.tenant.callMeBotApiKey) return;
 
+    const { CallMeBotService } = await import('../../services/callmebot.service');
+    const { toNumber }         = await import('../../utils/money');
+
     const { tenant, unit } = note.contract;
     await CallMeBotService.sendDebitNoteNotice({
-      phone:       tenant.phone,
-      apiKey:      tenant.callMeBotApiKey as string,
-      tenantName:  `${tenant.firstName} ${tenant.lastName}`,
-      propertyUnit:`${unit.property.name} — ${unit.number}`,
-      serviceType: note.serviceType,
-      description: note.description,
-      amount:      toNumber(note.amount),
-      currency:    note.currency as Currency,
-      periodMonth: note.periodMonth,
-      periodYear:  note.periodYear,
-      invoiceRef:  note.invoiceRef || undefined,
+      phone:        tenant.phone,
+      apiKey:       tenant.callMeBotApiKey as string,
+      tenantName:   `${tenant.firstName} ${tenant.lastName}`,
+      propertyUnit: `${unit.property.name} — ${unit.number}`,
+      serviceType:  note.serviceType,
+      description:  note.description,
+      amount:       toNumber(note.amount),
+      currency:     note.currency as 'HNL' | 'USD',
+      periodMonth:  note.periodMonth,
+      periodYear:   note.periodYear,
+      invoiceRef:   note.invoiceRef || undefined,
     });
 
     // Guardar en el log
@@ -418,6 +420,9 @@ export const debitNotesController = {
 
       if (!note) throw new AppError('Nota de débito no encontrada.', 404);
 
+      const { CallMeBotService } = await import('../../services/callmebot.service');
+      const { toNumber }         = await import('../../utils/money');
+
       const { tenant, unit } = note.contract;
 
       if (!tenant.callMeBotApiKey) {
@@ -436,7 +441,7 @@ export const debitNotesController = {
         serviceType:  note.serviceType,
         description:  note.description,
         amount:       toNumber(note.amount),
-        currency:     note.currency as Currency,
+        currency:     note.currency as 'HNL' | 'USD',
         periodMonth:  note.periodMonth,
         periodYear:   note.periodYear,
         invoiceRef:   note.invoiceRef || undefined,
