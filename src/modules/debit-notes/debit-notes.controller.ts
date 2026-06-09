@@ -365,9 +365,8 @@ export const debitNotesController = {
       const updated = await prisma.debitNote.update({
         where: { id: note.id },
         data: {
-          status:    'INCLUDED',
-          notes:     req.body.notes || note.notes,
-          updatedAt: new Date(),
+          status: 'INCLUDED',
+          notes:  req.body.notes || note.notes || undefined,
         },
         include: {
           contract: {
