@@ -22,7 +22,9 @@ router.post('/send-cxc-report',
 
 router.post('/test',
   authorize('ADMIN'),
-  body('chatId').notEmpty().withMessage('El Chat ID de Telegram es requerido.'),
+  body('chatId')
+    .if((value, { req }) => !req.body.phone || !req.body.apiKey)
+    .notEmpty().withMessage('El Chat ID de Telegram es requerido.'),
   validate,
   notificationsController.sendTest
 );

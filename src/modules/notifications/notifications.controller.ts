@@ -5,6 +5,7 @@ import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse } from '../../types';
 import { TelegramService } from '../../services/telegram.service';
 import { CallMeBotService } from '../../services/callmebot.service';
+import { TextMeBotService } from '../../services/textmebot.service';
 import { sendCuentasPorCobrarReport } from '../../jobs/notification.job';
 
 export const notificationsController = {
@@ -53,12 +54,20 @@ export const notificationsController = {
     } catch (err) { next(err); }
   },
 
-  /** POST /api/notifications/test — prueba Telegram o CallMeBot */
+  /** POST /api/notifications/test — prueba Telegram, TextMeBot o CallMeBot */
   async sendTest(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const { chatId, phone, apiKey, channel } = req.body;
 
-      if (channel === 'callmebot' || (!chatId && phone && apiKey)) {
+      if (channel === 'textmebot') {
+        // Prueba TextMeBot (soporta adjuntos, key global o por inquilino)
+        if (!phone || !apiKey) throw new AppError('Número y API Key son requeridos para TextMeBot.', 400);
+        const result = await TextMeBotService.sendTest(phone, apiKey);
+        await prisma.notificationLog.create({
+          data: { type: 'TEST', status: result.success ? 'SENT' : 'FAILED', toPhone: phone, tenantName: 'Prueba TextMeBot', message: '🧪 Prueba TextMeBot', errorMessage: result.error },
+        });
+        res.json(successResponse(result, result.success ? '✅ Mensaje WhatsApp (TextMeBot) enviado.' : `❌ ${result.error}`));
+      } else if (channel === 'callmebot' || (!chatId && phone && apiKey)) {
         // Prueba CallMeBot
         if (!phone || !apiKey) throw new AppError('Número y API Key son requeridos para CallMeBot.', 400);
         const result = await CallMeBotService.sendTest(phone, apiKey);
