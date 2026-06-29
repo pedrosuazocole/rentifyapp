@@ -55,7 +55,7 @@ router.get('/bch-historical', async (req: Request, res: Response, next: NextFunc
         source: 'local',
         fallback: true,
         message: 'No se pudo conectar al BCH. Mostrando historial local.',
-        rates: rates.map(r => ({
+        rates: rates.map((r: typeof rates[number]) => ({
           fecha: r.date,
           compra: parseFloat(r.rate.toString()),
           venta: parseFloat(r.rate.toString()),

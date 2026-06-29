@@ -339,7 +339,7 @@ export async function sendCuentasPorCobrarReport(): Promise<void> {
   const empresas = await prisma.company.findMany({ where: { isActive: true } });
   const scopes: Array<{ companyId: string | null; label: string | null }> = [
     { companyId: null, label: null }, // Empresa principal — sin etiqueta, igual que antes
-    ...empresas.map(e => ({ companyId: e.id, label: e.name })),
+    ...empresas.map((e: typeof empresas[number]) => ({ companyId: e.id, label: e.name })),
   ];
 
   let enviados = 0;
@@ -389,9 +389,9 @@ export async function sendCuentasPorCobrarReport(): Promise<void> {
       const bal  = Math.max(0, due - paid);
 
       const dns = (p.contract.debitNotes || []).filter(
-        dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+        (dn: any) => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
       );
-      const dnHNL = dns.reduce((s, dn) => {
+      const dnHNL = dns.reduce((s: number, dn: any) => {
         const amt = toNumber(dn.amount);
         return s + (dn.currency === 'HNL' ? amt : amt * bchRate);
       }, 0);
@@ -432,14 +432,14 @@ export async function sendCuentasPorCobrarReport(): Promise<void> {
       nombre: g.nombre,
       phone: g.phone,
       subtotalHNL: g.subtotalHNL,
-      items: g.pagos.map(p => {
+      items: g.pagos.map((p: any) => {
         const due  = toNumber(p.amountDue);
         const paid = toNumber(p.amountPaid);
         const bal  = Math.max(0, due - paid);
         const dns  = (p.contract.debitNotes || []).filter(
-          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+          (dn: any) => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
         );
-        const dnHNL = dns.reduce((s, dn) => {
+        const dnHNL = dns.reduce((s: number, dn: any) => {
           const amt = toNumber(dn.amount);
           return s + (dn.currency === 'HNL' ? amt : amt * bchRate);
         }, 0);
@@ -476,12 +476,12 @@ export async function sendCuentasPorCobrarReport(): Promise<void> {
 
     // ── 6. Enviar por TextMeBot — SIEMPRE con la key global ──────
     if (config.textMeBotSenderKey?.trim() && config.ccNumbersTextMeBot) {
-      const recipients = config.ccNumbersTextMeBot.split(',').map(n => n.trim()).filter(Boolean);
+      const recipients = config.ccNumbersTextMeBot.split(',').map((n: string) => n.trim()).filter(Boolean);
       for (const raw of recipients) {
         await sleep(9000); // TextMeBot exige mínimo 8 seg entre mensajes
         const phone = raw.includes(':') ? raw.split(':')[0].trim() : raw;
         const r = await TextMeBotService.send(phone, config.textMeBotSenderKey!, introMsg, pdfUrl, pdfFilename)
-          .catch(e => ({ success: false, error: String(e) }));
+          .catch((e: unknown) => ({ success: false, error: String(e) }));
         await saveLog({ type: 'REMINDER', status: r.success ? 'SENT' : 'FAILED', toPhone: phone, tenantName: scope.label ? `CC-TextMeBot (${scope.label})` : 'CC-TextMeBot', message: `[CC-TMB] Reporte CxC${tituloEmpresa} con PDF adjunto`, errorMessage: r.error });
       }
     }
@@ -491,7 +491,7 @@ export async function sendCuentasPorCobrarReport(): Promise<void> {
       let detallMsg = `📋 *DETALLE POR CLIENTE${tituloEmpresa}:*\n`;
       for (const [, g] of byTenant) {
         const bloque = `\n👤 *${g.nombre}*${g.phone?' · '+g.phone:''}\n` +
-          g.pagos.map(p => {
+          g.pagos.map((p: any) => {
             const bal   = Math.max(0, toNumber(p.amountDue) - toNumber(p.amountPaid));
             const balHNL = p.contract.currency === 'HNL' ? bal : bal * bchRate;
             const vence = p.dueDate.toLocaleDateString('es-HN', { month: 'short', day: 'numeric' });

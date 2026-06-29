@@ -9,6 +9,7 @@ interface JwtPayload {
   id: string;
   email: string;
   role: UserRole;
+  companyId: string | null;
 }
 
 export function authenticate(req: AuthenticatedRequest, _res: Response, next: NextFunction): void {

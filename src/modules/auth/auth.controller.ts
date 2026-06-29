@@ -25,14 +25,14 @@ export const authController = {
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const token = (jwt.sign as any)(
-        { id: user.id, email: user.email, role: user.role },
+        { id: user.id, email: user.email, role: user.role, companyId: user.companyId },
         env.JWT_SECRET,
         { expiresIn: env.JWT_EXPIRES_IN }
       );
 
       res.json(successResponse({
         token,
-        user: { id: user.id, email: user.email, name: user.name, role: user.role, baseCurrency: user.baseCurrency },
+        user: { id: user.id, email: user.email, name: user.name, role: user.role, baseCurrency: user.baseCurrency, companyId: user.companyId },
       }, 'Sesión iniciada correctamente.'));
     } catch (err) {
       next(err);
@@ -42,15 +42,15 @@ export const authController = {
   /** POST /api/auth/register (solo ADMIN puede crear usuarios) */
   async register(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { email, password, name, phone, role, baseCurrency } = req.body;
+      const { email, password, name, phone, role, baseCurrency, companyId } = req.body;
 
       const exists = await prisma.user.findUnique({ where: { email: email.toLowerCase() } });
       if (exists) throw new AppError('Ya existe una cuenta con ese correo.', 409);
 
       const passwordHash = await bcrypt.hash(password, 12);
       const user = await prisma.user.create({
-        data: { email: email.toLowerCase(), passwordHash, name, phone, role, baseCurrency },
-        select: { id: true, email: true, name: true, role: true, baseCurrency: true },
+        data: { email: email.toLowerCase(), passwordHash, name, phone, role, baseCurrency, companyId: companyId || null },
+        select: { id: true, email: true, name: true, role: true, baseCurrency: true, companyId: true },
       });
 
       res.status(201).json(successResponse(user, 'Usuario creado correctamente.'));
@@ -113,7 +113,7 @@ export const authController = {
         select: {
           id: true, email: true, name: true, phone: true,
           role: true, baseCurrency: true, isActive: true,
-          lastLoginAt: true, createdAt: true,
+          companyId: true, lastLoginAt: true, createdAt: true,
         },
         orderBy: { createdAt: 'asc' },
       });
@@ -124,7 +124,7 @@ export const authController = {
   /** PUT /api/auth/users/:id — actualizar cualquier usuario (solo ADMIN) */
   async updateUser(req: Request, res: Response, next: NextFunction): Promise<void> {
     try {
-      const { name, phone, role, isActive } = req.body;
+      const { name, phone, role, isActive, companyId } = req.body;
       const user = await prisma.user.update({
         where: { id: req.params.id },
         data: {
@@ -132,8 +132,9 @@ export const authController = {
           ...(phone !== undefined && { phone }),
           ...(role !== undefined && { role }),
           ...(isActive !== undefined && { isActive }),
+          ...(companyId !== undefined && { companyId: companyId || null }),
         },
-        select: { id: true, email: true, name: true, role: true, isActive: true },
+        select: { id: true, email: true, name: true, role: true, isActive: true, companyId: true },
       });
       res.json(successResponse(user, 'Usuario actualizado correctamente.'));
     } catch (err) { next(err); }

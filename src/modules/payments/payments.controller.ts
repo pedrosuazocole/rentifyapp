@@ -571,14 +571,14 @@ export const paymentsController = {
 
         // Notas de débito del mismo período (filtradas por mes/año del pago)
         const periodDebitNotes = (p.contract.debitNotes || []).filter(
-          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+          (dn: any) => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
         );
         const debitHNL = periodDebitNotes
-          .filter(dn => dn.currency === 'HNL')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
+          .filter((dn: any) => dn.currency === 'HNL')
+          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
         const debitUSD = periodDebitNotes
-          .filter(dn => dn.currency === 'USD')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
+          .filter((dn: any) => dn.currency === 'USD')
+          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
 
         const balanceHNL = contractCurrency === 'HNL' ? balance : balance * bchRate;
         const totalDebitHNL = debitHNL + debitUSD * bchRate;
@@ -630,14 +630,14 @@ export const paymentsController = {
         const bal    = Math.max(0, due - paid);
         const balHNL = p.contract.currency === 'HNL' ? bal : bal * bchRate;
         const periodDebitNotes = (p.contract.debitNotes || []).filter(
-          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+          (dn: any) => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
         );
         const debitHNL = periodDebitNotes
-          .filter(dn => dn.currency === 'HNL')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
+          .filter((dn: any) => dn.currency === 'HNL')
+          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
         const debitUSD = periodDebitNotes
-          .filter(dn => dn.currency === 'USD')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
+          .filter((dn: any) => dn.currency === 'USD')
+          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
 
         if (['PENDING','PARTIAL','LATE'].includes(p.status)) {
           byTenant[tid].subtotalHNL += balHNL + debitHNL + debitUSD * bchRate;
