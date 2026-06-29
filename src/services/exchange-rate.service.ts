@@ -36,15 +36,21 @@ function parseNumber(raw: string): number {
 
 export class ExchangeRateService {
   /**
-   * Obtiene la tasa (VENTA) más reciente de la BD.
-   * Si no hay para hoy, la descarga de Banpaís y la guarda.
+   * Obtiene la tasa (VENTA) de hoy desde la BD.
+   * Si no existe, o si el registro de hoy quedó de una fuente vieja
+   * (ej. "ExchangeRate-API" de antes de migrar a Banpaís), la vuelve
+   * a descargar y sobreescribe — así no se queda pegada una tasa
+   * obsoleta por un registro residual de hoy.
    */
   static async getTodayRate(): Promise<number> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const existing = await prisma.exchangeRate.findUnique({ where: { date: today } });
-    if (existing) return parseFloat(existing.rate.toString());
+    const fuentesValidas = ['Banpaís', 'Manual'];
+    if (existing && fuentesValidas.includes(existing.source)) {
+      return parseFloat(existing.rate.toString());
+    }
 
     return await this.fetchAndSave();
   }

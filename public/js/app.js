@@ -2978,7 +2978,7 @@ async function renderExchangeRates() {
         </button>
         <button class="btn btn-primary" onclick="forceRateUpdate()">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          Actualizar desde API
+          Actualizar desde Banpaís
         </button>
       </div>
     </div>
@@ -3168,7 +3168,7 @@ async function loadBchRates() {
 
 async function forceRateUpdate() {
   await apiFetch('/exchange-rates/fetch', { method: 'POST' });
-  toast('Tipo de cambio actualizado desde la API.');
+  toast('Tasa de venta actualizada desde Banpaís.');
   renderExchangeRates();
 }
 
