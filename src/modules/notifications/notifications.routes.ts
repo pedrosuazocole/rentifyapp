@@ -15,6 +15,11 @@ router.get('/logs',            authorize('ADMIN', 'OWNER'), notificationsControl
 router.delete('/logs',         authorize('ADMIN'), notificationsController.clearLogs);
 router.get('/telegram-updates', authorize('ADMIN'), notificationsController.getTelegramUpdates);
 
+router.post('/send-cxc-report',
+  authorize('ADMIN', 'OWNER'),
+  notificationsController.sendCxcReportNow
+);
+
 router.post('/test',
   authorize('ADMIN'),
   body('chatId').notEmpty().withMessage('El Chat ID de Telegram es requerido.'),

@@ -5,6 +5,7 @@ import { AppError } from '../../middlewares/error.middleware';
 import { AuthenticatedRequest, successResponse } from '../../types';
 import { TelegramService } from '../../services/telegram.service';
 import { CallMeBotService } from '../../services/callmebot.service';
+import { sendCuentasPorCobrarReport } from '../../jobs/notification.job';
 
 export const notificationsController = {
   /** GET /api/notifications/config */
@@ -137,6 +138,17 @@ export const notificationsController = {
         stats: { totalSent, totalFailed, lastSentAt: lastSent?.sentAt || null, nextReminders, tenantsWithoutNotif, tenantsWithTelegram, tenantsWithCallMeBot },
       }));
     } catch (err) { next(err); }
+  },
+
+  /** POST /api/notifications/send-cxc-report — enviar el reporte de Cuentas por Cobrar ahora, sin esperar el lunes */
+  async sendCxcReportNow(_req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+    try {
+      await sendCuentasPorCobrarReport();
+      res.json(successResponse(null, '✅ Reporte de Cuentas por Cobrar enviado.'));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error desconocido al generar el reporte.';
+      next(new AppError(`No se pudo enviar el reporte: ${msg}`, 500));
+    }
   },
 
   /** GET /api/notifications/telegram-updates */
