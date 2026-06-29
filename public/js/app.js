@@ -30,11 +30,27 @@ async function apiFetch(path, options = {}) {
       return null;
     }
 
+    // Si la respuesta no es JSON (p.ej. HTML de error), mostrar mensaje claro
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json') && !contentType.includes('text/json')) {
+      const text = await res.text();
+      const err = new Error(`Error ${res.status} en ${path}: respuesta inesperada del servidor`);
+      console.error(`[apiFetch] Error en ${path}:`, text.slice(0, 200));
+      if (err.name !== 'TypeError') toast(err.message, 'danger');
+      throw err;
+    }
+
     const data = await res.json();
     if (!res.ok) throw new Error(data.message || 'Error en el servidor');
     return data;
   } catch (err) {
-    if (err.name !== 'TypeError') toast(err.message, 'danger');
+    if (err.name !== 'TypeError' && !err.message?.includes('Error ')) {
+      toast(err.message, 'danger');
+    } else if (err.message?.includes('Error ')) {
+      // Ya fue mostrado arriba
+    } else if (err.name !== 'TypeError') {
+      toast(`Error en ${path}`, 'danger');
+    }
     throw err;
   }
 }
@@ -261,8 +277,21 @@ function printDocument() {
 }
 
 // ── Navegación ─────────────────────────────────────────────────
+function toggleSidebar() {
+  document.getElementById('sidebar')?.classList.toggle('open');
+  document.getElementById('sidebar-backdrop')?.classList.toggle('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar')?.classList.remove('open');
+  document.getElementById('sidebar-backdrop')?.classList.remove('open');
+}
+
 function navigate(page) {
   State.currentPage = page;
+
+  // En móvil: cerrar el menú automáticamente al elegir una opción
+  closeSidebar();
 
   // Actualizar nav activo
   document.querySelectorAll('.nav-item').forEach(el => {
@@ -274,17 +303,18 @@ function navigate(page) {
   if (!contentArea) return;
 
   const pages = {
-    dashboard:   renderDashboard,
-    properties:  renderProperties,
-    tenants:     renderTenants,
-    contracts:   renderContracts,
-    payments:    renderPayments,
+    dashboard:     renderDashboard,
+    properties:    renderProperties,
+    tenants:       renderTenants,
+    contracts:     renderContracts,
+    payments:      renderPayments,
     'exchange-rates': renderExchangeRates,
-    reports:     renderReports,
-    users:       renderUsers,
-    companies:   renderCompanies,
-    invoices:    renderInvoices,
+    reports:       renderReports,
+    users:         renderUsers,
+    companies:     renderCompanies,
+    invoices:      renderInvoices,
     notifications: renderNotifications,
+    'debit-notes': renderDebitNotes,
   };
 
   const renderFn = pages[page];
@@ -308,6 +338,7 @@ function navigate(page) {
     companies: 'Empresas',
     invoices: 'Facturas SAR',
     notifications: 'Configuración de Notificaciones',
+    'debit-notes': 'Notas de Débito',
   };
   const titleEl = document.getElementById('topbar-title');
   if (titleEl) titleEl.textContent = titles[page] || page;
@@ -911,6 +942,7 @@ async function renderContracts(page = 1, status = '') {
               <td>
                 <div class="flex gap-2">
                   <button class="btn btn-ghost btn-sm" onclick="viewContractDetail('${c.id}')">Ver</button>
+                  <button class="btn btn-ghost btn-sm" onclick="openEditContractModal('${c.id}')">Editar</button>
                   ${c.status === 'ACTIVE' ? `<button class="btn btn-ghost btn-sm" style="color:var(--c-danger)" onclick="terminateContract('${c.id}')">Rescindir</button>` : ''}
                 </div>
               </td>
@@ -1211,6 +1243,137 @@ async function terminateContract(id) {
   renderContracts();
 }
 
+// ── Editar Contrato ─────────────────────────────────────────────
+async function openEditContractModal(id) {
+  const res = await apiFetch(`/contracts/${id}`);
+  const c = res?.data;
+  if (!c) return;
+
+  const existing = document.getElementById('modal-edit-contract');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-edit-contract';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+
+  const toInputDate = (iso) => iso ? iso.slice(0, 10) : '';
+
+  modal.innerHTML = `
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <span class="modal-title">Editar contrato — ${c.tenant?.firstName} ${c.tenant?.lastName}</span>
+        <button class="modal-close" onclick="closeModal('modal-edit-contract');document.getElementById('modal-edit-contract').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info" style="margin-bottom:16px">
+          Inquilino: <strong>${c.tenant?.firstName} ${c.tenant?.lastName}</strong> &nbsp;·&nbsp;
+          Unidad: <strong>${c.unit?.property?.name} — ${c.unit?.number}</strong>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Fecha de inicio</label>
+            <input id="ec-start" class="form-control" type="date" value="${toInputDate(c.startDate)}" disabled>
+            <div class="form-hint">No modificable</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fecha de fin <span>*</span></label>
+            <input id="ec-end" class="form-control" type="date" value="${toInputDate(c.endDate)}">
+          </div>
+        </div>
+        <div class="form-grid-3">
+          <div class="form-group">
+            <label class="form-label">Monto mensual <span>*</span></label>
+            <input id="ec-rent" class="form-control" type="number" min="0" step="0.01" value="${c.monthlyRent}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Moneda <span>*</span></label>
+            <select id="ec-currency" class="form-control">
+              <option value="HNL" ${c.currency === 'HNL' ? 'selected' : ''}>HNL — Lempiras</option>
+              <option value="USD" ${c.currency === 'USD' ? 'selected' : ''}>USD — Dólares</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Día de pago <span>*</span></label>
+            <input id="ec-day" class="form-control" type="number" min="1" max="31" value="${c.paymentDayOfMonth}">
+            <div class="form-hint">Día del mes (1-31)</div>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Depósito</label>
+            <input id="ec-deposit" class="form-control" type="number" min="0" step="0.01" value="${c.depositAmount || 0}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Moneda del depósito</label>
+            <select id="ec-deposit-currency" class="form-control">
+              <option value="HNL" ${c.depositCurrency === 'HNL' ? 'selected' : ''}>HNL</option>
+              <option value="USD" ${c.depositCurrency === 'USD' ? 'selected' : ''}>USD</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">% de mora mensual</label>
+            <input id="ec-late" class="form-control" type="number" min="0" max="100" step="0.5" value="${c.lateFeePercent || 5}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Días de gracia</label>
+            <input id="ec-grace" class="form-control" type="number" min="0" max="30" value="${c.gracePeriodDays || 5}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas</label>
+          <textarea id="ec-notes" class="form-control" rows="3">${c.notes || ''}</textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-edit-contract');document.getElementById('modal-edit-contract').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="updateContract('${c.id}')">Guardar cambios</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+  openModal('modal-edit-contract');
+}
+
+async function updateContract(id) {
+  const endDate        = document.getElementById('ec-end')?.value;
+  const monthlyRent    = parseFloat(document.getElementById('ec-rent')?.value);
+  const currency       = document.getElementById('ec-currency')?.value;
+  const paymentDay     = parseInt(document.getElementById('ec-day')?.value);
+  const depositAmount  = parseFloat(document.getElementById('ec-deposit')?.value || '0');
+  const depositCurrency= document.getElementById('ec-deposit-currency')?.value;
+  const lateFeePercent = parseFloat(document.getElementById('ec-late')?.value || '5');
+  const gracePeriodDays= parseInt(document.getElementById('ec-grace')?.value || '5');
+  const notes          = document.getElementById('ec-notes')?.value?.trim() || undefined;
+
+  if (!endDate) { toast('⚠️ La fecha de fin es requerida.'); return; }
+  if (!monthlyRent || monthlyRent <= 0) { toast('⚠️ El monto mensual debe ser mayor a 0.'); return; }
+  if (!paymentDay || paymentDay < 1 || paymentDay > 31) { toast('⚠️ Día de pago inválido (1-31).'); return; }
+
+  const data = {
+    endDate, monthlyRent, currency,
+    paymentDayOfMonth: paymentDay,
+    depositAmount, depositCurrency,
+    lateFeePercent, gracePeriodDays,
+    notes,
+  };
+
+  try {
+    await apiFetch(`/contracts/${id}`, { method: 'PUT', body: JSON.stringify(data) });
+    toast('✅ Contrato actualizado correctamente.');
+    closeModal('modal-edit-contract');
+    document.getElementById('modal-edit-contract')?.remove();
+    renderContracts();
+  } catch (err) {
+    // El error ya fue mostrado por apiFetch
+  }
+}
+
 // ── Pagos ──────────────────────────────────────────────────────
 async function renderPayments(page = 1, status = '') {
   const query = `?page=${page}&limit=12${status ? '&status=' + status : ''}`;
@@ -1223,6 +1386,10 @@ async function renderPayments(page = 1, status = '') {
     <div class="page-header">
       <div><h2>Pagos</h2><p>Control de cobros y recibos</p></div>
       <div class="flex gap-2">
+        <button class="btn btn-primary" onclick="openCreateManualPayment()">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Nuevo Pago
+        </button>
         <button class="btn btn-ghost" onclick="openGenerateModal()">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
           Generar del mes
@@ -1255,6 +1422,7 @@ async function renderPayments(page = 1, status = '') {
               <td>
                 <div class="flex gap-2">
                   ${(p.status === 'PENDING' || p.status === 'LATE' || p.status === 'PARTIAL') ? `<button class="btn btn-primary btn-sm" onclick="openRegisterPayment('${p.id}')">Registrar pago</button>` : ''}
+                  <button class="btn btn-ghost btn-sm" onclick="openEditPayment('${p.id}')">Editar</button>
                   ${p.status === 'PAID' ? `<button class="btn btn-ghost btn-sm" onclick="previewReceipt('${p.id}')">Recibo</button>` : ''}
                 </div>
               </td>
@@ -1291,7 +1459,7 @@ async function renderPayments(page = 1, status = '') {
         </div>
         <div class="modal-footer">
           <button class="btn btn-ghost" onclick="closeModal('modal-generate')">Cancelar</button>
-          <button class="btn btn-primary" onclick="generatePayments()">Generar pagos</button>
+          <button class="btn btn-primary" onclick="generatePayments()">⚙️ Generar pagos automáticos</button>
         </div>
       </div>
     </div>
@@ -1368,7 +1536,146 @@ async function generatePayments() {
   renderPayments();
 }
 
+// ── Pago Manual ──────────────────────────────────────────────────
+async function openCreateManualPayment() {
+  // Build modal dynamically
+  const existing = document.getElementById('modal-create-manual-payment');
+  if (existing) existing.remove();
+
+  const contractsRes = await apiFetch('/contracts?status=ACTIVE&limit=200');
+  const contracts = contractsRes?.data || [];
+  const now = new Date();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-create-manual-payment';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="modal modal-lg">
+      <div class="modal-header">
+        <span class="modal-title">✏️ Crear pago manual</span>
+        <button class="modal-close" onclick="closeModal('modal-create-manual-payment');document.getElementById('modal-create-manual-payment').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted" style="margin-bottom:16px;font-size:0.85rem">
+          Crea un registro de pago pendiente para un contrato y período específico. Los pagos ya existentes no se duplicarán.
+        </p>
+        <div class="form-group">
+          <label class="form-label">Contrato / Inquilino <span>*</span></label>
+          <select id="mp-contract" class="form-control" onchange="onManualPaymentContractChange()">
+            <option value="">Seleccioná un contrato activo...</option>
+            ${contracts.map(c => `<option value="${c.id}" data-rent="${c.monthlyRent}" data-currency="${c.currency}">
+              ${c.tenant?.firstName} ${c.tenant?.lastName} — ${c.unit?.property?.name} ${c.unit?.number} (${c.currency})
+            </option>`).join('')}
+          </select>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Mes (período) <span>*</span></label>
+            <select id="mp-month" class="form-control">
+              ${MONTHS_ES.slice(1).map((m,i) => `<option value="${i+1}" ${i+1===now.getMonth()+1?'selected':''}>${m}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Año (período) <span>*</span></label>
+            <input id="mp-year" class="form-control" type="number" value="${now.getFullYear()}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Monto a cobrar</label>
+          <input id="mp-amount" class="form-control td-mono" type="number" step="0.01" placeholder="Se toma del contrato si se deja vacío">
+          <div class="form-hint" id="mp-amount-hint">Seleccioná un contrato para ver el monto del contrato</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Fecha de vencimiento</label>
+          <input id="mp-due-date" class="form-control" type="date">
+          <div class="form-hint">Opcional. Si se deja vacío se usa el día de pago del contrato</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas internas</label>
+          <input id="mp-notes" class="form-control" placeholder="Ej: pago adicional por mes extra...">
+        </div>
+        <div class="form-group">
+          <label class="form-label">📎 Comprobante de pago <span class="text-muted" style="font-size:0.75rem">(opcional)</span></label>
+          <input id="mp-proof" class="form-control" type="file" accept="image/*,.pdf"
+            style="padding:6px" onchange="previewProofFile2('mp-proof','mp-proof-preview')">
+          <div class="form-hint">Imagen o PDF — se enviará a los CC por WhatsApp al crear el pago</div>
+          <div id="mp-proof-preview" style="margin-top:8px;display:none">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--c-primary-lt);border-radius:var(--radius-md)">
+              <span id="mp-proof-icon" style="font-size:1.1rem">📄</span>
+              <span id="mp-proof-name" style="font-size:0.82rem;font-weight:600"></span>
+              <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--c-danger)" onclick="clearProofFile2('mp-proof','mp-proof-preview')">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-create-manual-payment');document.getElementById('modal-create-manual-payment').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="submitManualPayment()">Crear pago</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  openModal('modal-create-manual-payment');
+}
+
+function onManualPaymentContractChange() {
+  const sel  = document.getElementById('mp-contract');
+  const opt  = sel?.options[sel.selectedIndex];
+  const rent = opt?.dataset?.rent;
+  const curr = opt?.dataset?.currency;
+  const hint = document.getElementById('mp-amount-hint');
+  if (rent && curr && hint) {
+    hint.textContent = `Monto del contrato: ${curr === 'USD' ? '$ ' : 'L '}${parseFloat(rent).toFixed(2)} ${curr}`;
+    const amountInput = document.getElementById('mp-amount');
+    if (amountInput && !amountInput.value) amountInput.value = parseFloat(rent).toFixed(2);
+  }
+}
+
+async function submitManualPayment() {
+  const contractId  = document.getElementById('mp-contract')?.value;
+  const periodMonth = parseInt(document.getElementById('mp-month')?.value);
+  const periodYear  = parseInt(document.getElementById('mp-year')?.value);
+  const amountDue   = parseFloat(document.getElementById('mp-amount')?.value) || undefined;
+  const dueDate     = document.getElementById('mp-due-date')?.value || undefined;
+  const notes       = document.getElementById('mp-notes')?.value?.trim() || undefined;
+
+  if (!contractId) { toast('Seleccioná un contrato.', 'warning'); return; }
+
+  // Leer adjunto si fue seleccionado
+  const proofFile = document.getElementById('mp-proof')?.files?.[0];
+  let proofBase64 = null, proofMime = null, proofName = null;
+  if (proofFile) {
+    proofBase64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload  = () => resolve(r.result.split(',')[1]);
+      r.onerror = reject;
+      r.readAsDataURL(proofFile);
+    });
+    proofMime = proofFile.type;
+    proofName = proofFile.name;
+  }
+
+  const res = await apiFetch('/payments/create-manual', {
+    method: 'POST',
+    body: JSON.stringify({
+      contractId, periodMonth, periodYear, amountDue, dueDate, notes,
+      ...(proofBase64 && { proofBase64, proofMime, proofName }),
+    }),
+  });
+
+  if (res) {
+    toast(`✅ ${res.message || 'Pago manual creado correctamente.'}`);
+    closeModal('modal-create-manual-payment');
+    document.getElementById('modal-create-manual-payment')?.remove();
+    renderPayments();
+  }
+}
+
 let currentPaymentId = null;
+let payProofFiles = [];
 async function openRegisterPayment(paymentId) {
   currentPaymentId = paymentId;
   openModal('modal-register-payment');
@@ -1384,6 +1691,16 @@ async function openRegisterPayment(paymentId) {
 
   body.innerHTML = `
     ${payment?.isLate ? `<div class="alert alert-danger">Este pago está en mora (${payment.daysLate} días). Se aplicará un cargo del ${payment.contract?.lateFeePercent}%.</div>` : ''}
+    <div class="form-group">
+      <label class="form-label">Período del pago</label>
+      <div class="form-grid" style="margin-bottom:0">
+        <select id="pay-period-month" class="form-control">
+          ${MONTHS_ES.slice(1).map((m,i) => `<option value="${i+1}" ${i+1===(payment?.periodMonth||new Date().getMonth()+1)?'selected':''}>${m}</option>`).join('')}
+        </select>
+        <input id="pay-period-year" class="form-control" type="number" value="${payment?.periodYear||new Date().getFullYear()}">
+      </div>
+      <div class="form-hint">Período al que corresponde este pago</div>
+    </div>
     <div class="form-group">
       <label class="form-label">Monto a registrar</label>
       <input id="pay-amount" class="form-control td-mono" type="number" step="0.01" value="${payment?.amountDue || ''}">
@@ -1407,7 +1724,17 @@ async function openRegisterPayment(paymentId) {
       <label class="form-label">Notas</label>
       <input id="pay-notes" class="form-control" placeholder="Transferencia, efectivo, etc.">
     </div>
+    <div class="form-group">
+      <label class="form-label">📎 Comprobante de pago <span class="text-muted" style="font-size:0.75rem">(opcional, máx. 5 archivos)</span></label>
+      <input id="pay-proof" class="form-control" type="file" accept="image/*,.pdf" multiple
+        style="padding:6px" onchange="previewProofFiles(this)">
+      <div class="form-hint">Imágenes o PDF del comprobante (hasta 5) — se enviarán a los números CC por WhatsApp</div>
+      <div id="pay-proof-preview" style="margin-top:8px;display:none">
+        <div id="pay-proof-list" style="display:flex;flex-direction:column;gap:6px"></div>
+      </div>
+    </div>
   `;
+  payProofFiles = [];
 }
 
 function updateConversion() {
@@ -1424,19 +1751,250 @@ async function submitPayment() {
 
   if (!amountPaid || amountPaid <= 0) { toast('Ingresá un monto válido.', 'warning'); return; }
 
+  // Leer los comprobantes seleccionados (hasta 5 archivos)
+  let proofs = [];
+  if (payProofFiles.length) {
+    proofs = await Promise.all(payProofFiles.map(file => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve({
+        proofBase64: reader.result.split(',')[1],
+        proofMime: file.type,
+        proofName: file.name,
+      });
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    })));
+  }
+
   const res = await apiFetch(`/payments/${currentPaymentId}/register`, {
     method: 'POST',
-    body: JSON.stringify({ amountPaid, paymentCurrency, paymentDate, notes }),
+    body: JSON.stringify({
+      amountPaid, paymentCurrency, paymentDate, notes,
+      ...(proofs.length && { proofs }),
+    }),
   });
 
   toast(res?.message || 'Pago registrado. El recibo fue enviado por WhatsApp.');
   closeModal('modal-register-payment');
+  payProofFiles = [];
 
   // Abrir vista previa del recibo automáticamente
   if (res?.data?.status === 'PAID') {
     setTimeout(() => previewReceipt(currentPaymentId), 600);
   }
 
+  renderPayments();
+}
+
+function previewProofFiles(input) {
+  const incoming = Array.from(input?.files || []);
+  if (!incoming.length) return;
+
+  const MAX_FILES = 5;
+  const espacioDisponible = MAX_FILES - payProofFiles.length;
+
+  if (espacioDisponible <= 0) {
+    toast(`Ya seleccionaste el máximo de ${MAX_FILES} archivos.`, 'warning');
+    input.value = '';
+    return;
+  }
+
+  const aAgregar = incoming.slice(0, espacioDisponible);
+  if (incoming.length > espacioDisponible) {
+    toast(`Solo se agregaron ${aAgregar.length} archivo(s). Máximo ${MAX_FILES} comprobantes.`, 'warning');
+  }
+
+  payProofFiles = payProofFiles.concat(aAgregar);
+  input.value = ''; // permitir volver a elegir más sin duplicar los ya agregados
+  renderProofFilesList();
+}
+
+function removeProofFile(index) {
+  payProofFiles.splice(index, 1);
+  renderProofFilesList();
+}
+
+function renderProofFilesList() {
+  const preview = document.getElementById('pay-proof-preview');
+  const list     = document.getElementById('pay-proof-list');
+  if (!preview || !list) return;
+
+  if (!payProofFiles.length) {
+    preview.style.display = 'none';
+    list.innerHTML = '';
+    return;
+  }
+
+  preview.style.display = 'block';
+  list.innerHTML = payProofFiles.map((file, i) => `
+    <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--c-primary-lt);border-radius:var(--radius-md)">
+      <span style="font-size:1.2rem">${file.type.includes('pdf') ? '📄' : '🖼️'}</span>
+      <span style="font-size:0.82rem;font-weight:600">${file.name} (${(file.size/1024).toFixed(1)} KB)</span>
+      <button type="button" class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--c-danger)" onclick="removeProofFile(${i})">✕</button>
+    </div>
+  `).join('');
+}
+
+function clearProofFile() {
+  const input   = document.getElementById('pay-proof');
+  const preview = document.getElementById('pay-proof-preview');
+  if (input)   input.value = '';
+  if (preview) preview.style.display = 'none';
+  payProofFiles = [];
+}
+
+function previewProofFile2(inputId, previewId) {
+  const input   = document.getElementById(inputId);
+  const file    = input?.files?.[0];
+  const preview = document.getElementById(previewId);
+  if (!file || !preview) return;
+  const iconId = previewId.replace('-preview', '-icon');
+  const nameId = previewId.replace('-preview', '-name');
+  const icon = document.getElementById(iconId);
+  const name = document.getElementById(nameId);
+  if (icon) icon.textContent = file.type.includes('pdf') ? '📄' : '🖼️';
+  if (name) name.textContent = `${file.name} (${(file.size/1024).toFixed(1)} KB)`;
+  preview.style.display = 'block';
+}
+
+function clearProofFile2(inputId, previewId) {
+  const input   = document.getElementById(inputId);
+  const preview = document.getElementById(previewId);
+  if (input)   input.value = '';
+  if (preview) preview.style.display = 'none';
+}
+
+async function openEditPayment(paymentId) {
+  const res = await apiFetch(`/payments/${paymentId}`);
+  const p   = res?.data;
+  if (!p) { toast('No se pudo cargar el pago.', 'danger'); return; }
+
+  const existing = document.getElementById('modal-edit-payment');
+  if (existing) existing.remove();
+
+  // Extraer valores a variables para evitar caracteres especiales en el template
+  const tenantName   = ((p.contract?.tenant?.firstName || '') + ' ' + (p.contract?.tenant?.lastName || '')).trim();
+  const propName     = (p.contract?.unit?.property?.name || '').replace(/'/g, '&#39;').replace(/</g, '&lt;');
+  const unitNumber   = (p.contract?.unit?.number || '');
+  const periodo      = (MONTHS_ES[p.periodMonth] || '') + ' ' + (p.periodYear || '');
+  const amountDueVal = parseFloat(p.amountDue || 0).toFixed(2);
+  const dueDateVal   = (p.dueDate || '').split('T')[0];
+  const notesVal     = (p.notes || '').replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-edit-payment';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Editar pago</span>
+        <button class="modal-close" onclick="closeModal('modal-edit-payment');document.getElementById('modal-edit-payment').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-pay-id" value="${p.id}">
+        <div class="alert alert-info" style="margin-bottom:16px;font-size:0.83rem">
+          <strong>${tenantName}</strong> — ${propName} ${unitNumber} — Período: <strong>${periodo}</strong>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Mes del período</label>
+            <select id="edit-pay-month" class="form-control">
+              ${MONTHS_ES.slice(1).map((m, i) => `<option value="${i+1}" ${i+1===p.periodMonth?'selected':''}>${m}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Año del período</label>
+            <input id="edit-pay-year" class="form-control" type="number" value="${p.periodYear}">
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Monto adeudado</label>
+            <input id="edit-pay-due" class="form-control td-mono" type="number" step="0.01" value="${amountDueVal}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fecha de vencimiento</label>
+            <input id="edit-pay-due-date" class="form-control" type="date" value="${dueDateVal}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Estado</label>
+          <select id="edit-pay-status" class="form-control">
+            <option value="PENDING"  ${p.status==='PENDING' ?'selected':''}>Pendiente</option>
+            <option value="PAID"     ${p.status==='PAID'    ?'selected':''}>Pagado</option>
+            <option value="PARTIAL"  ${p.status==='PARTIAL' ?'selected':''}>Parcial</option>
+            <option value="LATE"     ${p.status==='LATE'    ?'selected':''}>En mora</option>
+            <option value="WAIVED"   ${p.status==='WAIVED'  ?'selected':''}>Condonado</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas</label>
+          <input id="edit-pay-notes" class="form-control" placeholder="Observaciones..." value="${notesVal}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">📎 Enviar comprobante adjunto <span class="text-muted" style="font-size:0.75rem">(opcional)</span></label>
+          <input id="edit-pay-proof" class="form-control" type="file" accept="image/*,.pdf"
+            style="padding:6px" onchange="previewProofFile2('edit-pay-proof','edit-pay-proof-preview')">
+          <div class="form-hint">Se enviará al inquilino y a los CC por WhatsApp al guardar</div>
+          <div id="edit-pay-proof-preview" style="margin-top:8px;display:none">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--c-primary-lt);border-radius:var(--radius-md)">
+              <span id="edit-pay-proof-icon" style="font-size:1.1rem">📄</span>
+              <span id="edit-pay-proof-name" style="font-size:0.82rem;font-weight:600"></span>
+              <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--c-danger)" onclick="clearProofFile2('edit-pay-proof','edit-pay-proof-preview')">✕</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-edit-payment');document.getElementById('modal-edit-payment').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="submitEditPayment()">Guardar cambios</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  openModal('modal-edit-payment');
+}
+
+async function submitEditPayment() {
+  const id          = document.getElementById('edit-pay-id')?.value;
+  const periodMonth = parseInt(document.getElementById('edit-pay-month')?.value);
+  const periodYear  = parseInt(document.getElementById('edit-pay-year')?.value);
+  const amountDue   = parseFloat(document.getElementById('edit-pay-due')?.value);
+  const dueDate     = document.getElementById('edit-pay-due-date')?.value;
+  const status      = document.getElementById('edit-pay-status')?.value;
+  const notes       = document.getElementById('edit-pay-notes')?.value?.trim();
+
+  if (!amountDue || amountDue <= 0) { toast('El monto debe ser mayor a 0.', 'warning'); return; }
+
+  // Leer adjunto si fue seleccionado
+  const proofFile = document.getElementById('edit-pay-proof')?.files?.[0];
+  let proofBase64 = null, proofMime = null, proofName = null;
+  if (proofFile) {
+    proofBase64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload  = () => resolve(r.result.split(',')[1]);
+      r.onerror = reject;
+      r.readAsDataURL(proofFile);
+    });
+    proofMime = proofFile.type;
+    proofName = proofFile.name;
+  }
+
+  await apiFetch(`/payments/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      periodMonth, periodYear, amountDue, dueDate,
+      status, notes: notes || undefined,
+      ...(proofBase64 && { proofBase64, proofMime, proofName }),
+    }),
+  });
+
+  toast('✅ Pago actualizado correctamente.');
+  closeModal('modal-edit-payment');
+  document.getElementById('modal-edit-payment')?.remove();
   renderPayments();
 }
 
@@ -1488,51 +2046,31 @@ async function renderNotifications() {
     apiFetch('/notifications/status'),
   ]);
 
-  const cfg     = configRes?.data || {};
-  const status  = statusRes?.data || {};
-  const tgOk    = status.telegramConfigured;
-  const botName = status.botUsername;
-  const stats   = status.stats || {};
+  const cfg   = configRes?.data || {};
+  const stats = statusRes?.data?.stats || {};
 
   const content = document.getElementById('page-content');
   content.innerHTML = `
     <div class="page-header">
-      <div><h2>Notificaciones Telegram</h2><p>Mensajes automáticos gratuitos y sin límites vía Telegram Bot</p></div>
-      <button class="btn btn-primary" onclick="saveNotificationConfig()">
-        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
-        Guardar configuración
-      </button>
-    </div>
-
-    <div class="alert ${tgOk ? 'alert-success' : 'alert-warning'}" style="margin-bottom:20px">
-      <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-        ${tgOk ? '<polyline points="20 6 9 17 4 12"/>' : '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>'}
-      </svg>
-      <div>
-        ${tgOk
-          ? `<strong>✅ Bot activo: @${botName || 'tu-bot'}</strong><br><small>Los inquilinos deben escribir /start al bot una sola vez.</small>`
-          : `<strong>⚠️ Bot no configurado</strong><br><small>Agregá <code>TELEGRAM_BOT_TOKEN</code> en Railway → Rentify → Variables y redesplegá.</small>`}
+      <div><h2>Notificaciones</h2><p>WhatsApp via CallMeBot — gratuito, sin límites de ventana</p></div>
+      <div class="flex gap-2">
+        <button class="btn btn-ghost" onclick="sendCxcReportNow()" title="Enviar reporte ahora sin esperar el lunes">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+          Enviar reporte CxC ahora
+        </button>
+        <button class="btn btn-primary" onclick="saveNotificationConfig()">
+          <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+          Guardar configuración
+        </button>
       </div>
     </div>
 
-    ${!tgOk ? `
-    <div class="card" style="margin-bottom:20px;border:2px solid var(--c-accent)">
-      <div style="font-weight:600;font-size:0.95rem;margin-bottom:14px">📖 Cómo configurar el Bot de Telegram</div>
-      <div style="display:flex;flex-direction:column;gap:10px;font-size:0.85rem">
-        <div style="display:flex;gap:10px"><span style="background:var(--c-primary);color:#fff;border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700">1</span><span>Abrí Telegram y buscá <strong>@BotFather</strong> (tiene ✅ azul verificado)</span></div>
-        <div style="display:flex;gap:10px"><span style="background:var(--c-primary);color:#fff;border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700">2</span><span>Enviá <code>/newbot</code> y seguí los pasos — poné <strong>Rentify App</strong> como nombre</span></div>
-        <div style="display:flex;gap:10px"><span style="background:var(--c-primary);color:#fff;border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700">3</span><span>BotFather te da un token: <code>7412365890:AAFxxx...</code> — copiálo</span></div>
-        <div style="display:flex;gap:10px"><span style="background:var(--c-primary);color:#fff;border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700">4</span><span>Railway → Rentify → Variables → agregá: <code>TELEGRAM_BOT_TOKEN = tu_token</code></span></div>
-        <div style="display:flex;gap:10px"><span style="background:var(--c-primary);color:#fff;border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700">5</span><span>Redesplegá y volvé aquí — el estado cambiará a ✅</span></div>
-        <div style="display:flex;gap:10px"><span style="background:var(--c-accent);color:#fff;border-radius:50%;min-width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:0.72rem;font-weight:700">6</span><span>Cada inquilino abre Telegram, busca el bot y escribe <strong>/start</strong> — una sola vez para siempre</span></div>
-      </div>
-    </div>` : ''}
-
+    <!-- Stats -->
     <div class="stat-grid" style="margin-bottom:24px">
       <div class="stat-card">
         <div class="stat-icon green"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg></div>
         <div class="stat-value">${stats.totalSent || 0}</div>
-        <div class="stat-label">Enviados</div>
+        <div class="stat-label">Mensajes enviados</div>
       </div>
       <div class="stat-card">
         <div class="stat-icon red"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg></div>
@@ -1545,15 +2083,19 @@ async function renderNotifications() {
         <div class="stat-label">Recordatorios próximos</div>
       </div>
       <div class="stat-card">
-        <div class="stat-icon ${(stats.tenantsWithoutNotif || 0) > 0 ? 'red' : 'green'}"><svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div>
+        <div class="stat-icon ${(stats.tenantsWithoutNotif || 0) > 0 ? 'red' : 'green'}">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+        </div>
         <div class="stat-value">${stats.tenantsWithoutNotif || 0}</div>
-        <div class="stat-label">Sin ningún canal configurado</div>
+        <div class="stat-label">Sin CallMeBot configurado</div>
       </div>
     </div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
 
+      <!-- Izquierda -->
       <div>
+        <!-- Tipos de notificación -->
         <div class="card" style="margin-bottom:16px">
           <div class="card-header"><span class="card-title">📋 Tipos de notificación</span></div>
           <div style="display:flex;flex-direction:column;gap:14px">
@@ -1562,27 +2104,26 @@ async function renderNotifications() {
               { key: 'receiptEnabled',    icon: '✅', label: 'Recibo de pago',          desc: 'Al registrar un pago completo', daysKey: null },
               { key: 'lateNoticeEnabled', icon: '⚠️', label: 'Aviso de mora',           desc: '1 día después del plazo de gracia', daysKey: null },
               { key: 'renewalEnabled',    icon: '📋', label: 'Aviso de renovación',     desc: (cfg.renewalDaysBefore||30) + ' días antes del fin del contrato', daysKey: 'renewalDaysBefore' },
+              { key: 'debitNoteEnabled',  icon: '⚡', label: 'Nueva nota de débito',    desc: 'Al registrar un cargo por servicio público', daysKey: null },
             ].map(function(item) {
               var isOn = cfg[item.key] !== false;
-              return '<div style="display:flex;align-items:flex-start;justify-content:space-between;padding:12px;border:1px solid var(--c-border);border-radius:var(--radius-md);background:' + (isOn ? 'var(--c-primary-lt)' : 'var(--c-surface-alt)') + '" id="wrap-' + item.key + '">' +
+              return '<div style="display:flex;align-items:flex-start;justify-content:space-between;padding:12px;border:1px solid var(--c-border);border-radius:var(--radius-md);background:' + (isOn?'var(--c-primary-lt)':'var(--c-surface-alt)') + '" id="wrap-' + item.key + '">' +
                 '<div style="flex:1">' +
-                  '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px">' +
-                    '<span>' + item.icon + '</span>' +
-                    '<strong style="font-size:0.88rem">' + item.label + '</strong>' +
-                  '</div>' +
+                  '<div style="display:flex;align-items:center;gap:8px;margin-bottom:3px"><span>' + item.icon + '</span><strong style="font-size:0.88rem">' + item.label + '</strong></div>' +
                   '<div class="text-muted" style="font-size:0.78rem">' + item.desc + '</div>' +
                   (item.daysKey ? '<div style="margin-top:8px;display:flex;align-items:center;gap:8px"><label style="font-size:0.75rem;color:var(--c-text-muted)">Días:</label><input id="cfg-' + item.daysKey + '" type="number" min="1" max="60" value="' + (cfg[item.daysKey]||3) + '" class="form-control" style="width:70px;padding:4px 8px;font-size:0.82rem"></div>' : '') +
                 '</div>' +
-                '<div style="width:44px;height:24px;border-radius:12px;background:' + (isOn ? 'var(--c-primary)' : 'var(--c-border)') + ';position:relative;cursor:pointer;flex-shrink:0;margin-left:12px" id="toggle-' + item.key + '" onclick="toggleNotifConfig(\'' + item.key + '\')">' +
-                  '<input type="checkbox" id="cfg-' + item.key + '" ' + (isOn ? 'checked' : '') + ' style="display:none">' +
-                  '<div style="width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:3px;left:' + (isOn ? '23px' : '3px') + ';transition:left 0.2s" id="knob-' + item.key + '"></div>' +
+                '<div style="width:44px;height:24px;border-radius:12px;background:' + (isOn?'var(--c-primary)':'var(--c-border)') + ';position:relative;cursor:pointer;flex-shrink:0;margin-left:12px" id="toggle-' + item.key + '" onclick="toggleNotifConfig(\'' + item.key + '\')">' +
+                  '<input type="checkbox" id="cfg-' + item.key + '" ' + (isOn?'checked':'') + ' style="display:none">' +
+                  '<div style="width:18px;height:18px;border-radius:50%;background:#fff;position:absolute;top:3px;left:' + (isOn?'23px':'3px') + ';transition:left 0.2s" id="knob-' + item.key + '"></div>' +
                 '</div>' +
               '</div>';
             }).join('')}
           </div>
         </div>
 
-        <div class="card">
+        <!-- Hora de envío -->
+        <div class="card" style="margin-bottom:16px">
           <div class="card-header"><span class="card-title">⏰ Hora de envío diario</span></div>
           <div class="form-grid">
             <div class="form-group">
@@ -1596,73 +2137,114 @@ async function renderNotifications() {
             </div>
           </div>
         </div>
+
+        <!-- Reporte CxC -->
+        <div class="card" style="border:2px solid var(--c-primary-lt)">
+          <div class="card-header">
+            <span class="card-title">📊 Reporte Cuentas por Cobrar</span>
+            <span class="badge badge-success">Automático</span>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px;font-size:0.85rem">
+            <div style="display:flex;align-items:center;gap:10px;padding:10px;background:var(--c-primary-lt);border-radius:var(--radius-md)">
+              <svg width="20" height="20" fill="none" stroke="var(--c-primary)" stroke-width="2" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+              <div>
+                <div style="font-weight:600;color:var(--c-primary)">Todos los lunes a las 3:00 PM</div>
+                <div class="text-muted">Se envía automáticamente a los números CC</div>
+              </div>
+            </div>
+            <div class="text-muted">El reporte incluye:</div>
+            <ul style="margin:0 0 0 16px;display:flex;flex-direction:column;gap:4px">
+              <li>Total de cobros pendientes en HNL y USD</li>
+              <li>Cantidad de pagos en mora</li>
+              <li>Detalle por inquilino — nombre, unidad, monto y fecha de vencimiento</li>
+              <li>Estado: 🔴 mora / 🟡 parcial / 🟠 pendiente</li>
+            </ul>
+            <button class="btn btn-ghost" style="width:100%;margin-top:4px" onclick="sendCxcReportNow()">
+              <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+              Enviar reporte ahora (sin esperar el lunes)
+            </button>
+          </div>
+        </div>
       </div>
 
+      <!-- Derecha -->
       <div>
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header"><span class="card-title">🔍 Obtener Chat IDs Telegram</span></div>
-          <p class="text-muted" style="margin-bottom:12px;font-size:0.83rem">
-            Cuando un inquilino escribe <strong>/start</strong> al bot, su Chat ID queda registrado aquí.
+        <!-- Números CC -->
+        <div class="card" style="margin-bottom:16px;border:2px solid var(--c-accent)">
+          <div class="card-header">
+            <span class="card-title">📲 Números adicionales (CC)</span>
+            <span class="badge badge-accent">Reporte CxC aquí</span>
+          </div>
+          <p class="text-muted" style="margin-bottom:14px;font-size:0.82rem">
+            Estos números reciben <strong>todas</strong> las notificaciones y el reporte CxC los lunes 3:00 PM.
           </p>
-          <button class="btn btn-ghost" style="width:100%;margin-bottom:10px" onclick="loadTelegramUpdates()">
-            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Ver usuarios que escribieron al bot
-          </button>
-          <div id="telegram-updates"></div>
+
+          <!-- TextMeBot CC (recomendado) -->
+          <div style="background:var(--c-primary-lt);border:1px solid var(--c-primary);border-radius:var(--radius-md);padding:14px;margin-bottom:14px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <span style="font-size:1rem">📎</span>
+              <strong style="font-size:0.88rem;color:var(--c-primary)">TextMeBot</strong>
+              <span class="badge badge-success" style="font-size:0.68rem">Con PDF adjunto</span>
+            </div>
+            <div class="form-group" style="margin-bottom:10px">
+              <label class="form-label">Tu API Key de TextMeBot <span style="color:var(--c-danger)">*</span></label>
+              <input id="cfg-textMeBotSenderKey" class="form-control td-mono"
+                placeholder="Tu API Key de tu suscripción TextMeBot"
+                value="${cfg.textMeBotSenderKey||''}">
+              <div class="form-hint">Esta es <strong>tu propia API Key</strong> de tu suscripción — la misma para todos los destinatarios.</div>
+            </div>
+            <div class="form-group" style="margin-bottom:6px">
+              <label class="form-label">Números destinatarios</label>
+              <textarea id="cfg-ccNumbersTextMeBot" class="form-control td-mono" rows="3"
+                placeholder="+50494502710&#10;+50499826565&#10;+50494755230"
+                style="font-size:0.82rem">${(cfg.ccNumbersTextMeBot||'').replace(/,/g, '\n')}</textarea>
+              <div class="form-hint">Un número por línea — solo el número, sin API Key individual.</div>
+            </div>
+          </div>
+
+          <!-- CallMeBot CC (alternativa) -->
+          <details style="border:1px solid var(--c-border);border-radius:var(--radius-md);padding:12px">
+            <summary style="cursor:pointer;font-size:0.85rem;font-weight:600;color:var(--c-text-muted)">
+              📱 CallMeBot (alternativa — cada número necesita su propia API Key)
+            </summary>
+            <div style="margin-top:12px">
+              <div class="form-group">
+                <label class="form-label">Números con CallMeBot</label>
+                <textarea id="cfg-ccNumbers" class="form-control td-mono" rows="3"
+                  placeholder="+50494502710:8557256&#10;+50499826565:1234567"
+                  style="font-size:0.82rem">${(cfg.ccNumbers||'').replace(/,/g, '\n')}</textarea>
+                <div class="form-hint">Formato: <code>+504XXXXXXXX:apikey</code> uno por línea</div>
+              </div>
+              <div class="alert alert-info" style="font-size:0.76rem;margin-top:6px">
+                Cada número activa CallMeBot enviando <strong>"I allow callmebot to send me messages"</strong> al +34 644 61 43 97.
+              </div>
+            </div>
+          </details>
         </div>
 
-        <!-- Prueba de envío -->
+        <!-- Prueba de envío — TextMeBot y CallMeBot -->
         <div class="card" style="margin-bottom:16px">
           <div class="card-header"><span class="card-title">🧪 Prueba de envío</span></div>
-          <div class="tabs" style="margin-bottom:12px">
-            <button class="tab-btn active" onclick="switchTestTab('telegram',this)">📨 Telegram</button>
-            <button class="tab-btn" onclick="switchTestTab('callmebot',this)">📱 WhatsApp</button>
+          <div style="display:flex;gap:8px;margin-bottom:14px">
+            <button id="tab-textmebot" class="btn btn-primary btn-sm" onclick="switchTestChannel('textmebot')">📎 TextMeBot</button>
+            <button id="tab-callmebot" class="btn btn-ghost btn-sm" onclick="switchTestChannel('callmebot')">📱 CallMeBot</button>
           </div>
-          <div id="test-tab-telegram">
-            <div class="form-group">
-              <label class="form-label">Chat ID de Telegram</label>
-              <input id="test-chat-id" class="form-control td-mono" placeholder="Ej: 123456789">
-            </div>
-            <button class="btn ${tgOk ? 'btn-primary' : 'btn-ghost'}" style="width:100%"
-              onclick="sendTestNotification('telegram')" ${!tgOk ? 'disabled' : ''}>
-              <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              ${tgOk ? 'Enviar por Telegram' : 'Configurá el bot primero'}
-            </button>
+          <div class="form-group">
+            <label class="form-label">Número WhatsApp</label>
+            <input id="test-phone" class="form-control td-mono" placeholder="+50499887766">
           </div>
-          <div id="test-tab-callmebot" style="display:none">
-            <div class="alert alert-info" style="margin-bottom:12px;font-size:0.8rem">
-              El inquilino envía <strong>"I allow callmebot to send me messages"</strong> al <strong>+34 644 61 43 97</strong> en WhatsApp y recibe su API Key personal.
-            </div>
-            <div class="form-group">
-              <label class="form-label">Número WhatsApp (+504XXXXXXXX)</label>
-              <input id="test-cmb-phone" class="form-control td-mono" placeholder="+50499887766">
-            </div>
-            <div class="form-group">
-              <label class="form-label">API Key de CallMeBot</label>
-              <input id="test-cmb-apikey" class="form-control td-mono" placeholder="Ej: 1234567">
-            </div>
-            <button class="btn btn-primary" style="width:100%" onclick="sendTestNotification('callmebot')">
-              <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-              Enviar por WhatsApp
-            </button>
+          <div class="form-group">
+            <label class="form-label" id="test-apikey-label">API Key de TextMeBot</label>
+            <input id="test-apikey" class="form-control td-mono" placeholder="Ej: hAU18CuvHLC8">
           </div>
+          <button class="btn btn-primary" style="width:100%" onclick="sendTestNotification(currentTestChannel||'textmebot')">
+            <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+            Enviar prueba por WhatsApp
+          </button>
           <div id="test-result" style="margin-top:12px"></div>
         </div>
 
-        <!-- Números CC adicionales -->
-        <div class="card" style="margin-bottom:16px">
-          <div class="card-header"><span class="card-title">📋 Números CC adicionales</span></div>
-          <p class="text-muted" style="margin-bottom:12px;font-size:0.82rem">
-            Estas personas reciben copia de <strong>todas</strong> las notificaciones (dueños, contadores, administradores).
-          </p>
-          <div class="form-group">
-            <label class="form-label">Chat IDs de Telegram (separados por coma)</label>
-            <input id="cfg-ccNumbers" class="form-control td-mono" placeholder="123456789,987654321"
-              value="${cfg.ccNumbers || ''}">
-            <div class="form-hint">Para WhatsApp usá el formato <code>+504XXXXXXXX:apikey</code> — Ej: <code>+50499887766:1234567</code></div>
-          </div>
-        </div>
-
+        <!-- Historial -->
         <div class="card">
           <div class="card-header">
             <span class="card-title">📜 Historial reciente</span>
@@ -1682,10 +2264,10 @@ async function renderNotifications() {
 }
 
 function toggleNotifConfig(key) {
-  const cb   = document.getElementById('cfg-' + key);
-  const tog  = document.getElementById('toggle-' + key);
-  const knob = document.getElementById('knob-' + key);
-  const wrap = document.getElementById('wrap-' + key);
+  var cb = document.getElementById('cfg-' + key);
+  var tog = document.getElementById('toggle-' + key);
+  var knob = document.getElementById('knob-' + key);
+  var wrap = document.getElementById('wrap-' + key);
   if (!cb) return;
   cb.checked = !cb.checked;
   if (tog)  tog.style.background  = cb.checked ? 'var(--c-primary)' : 'var(--c-border)';
@@ -1694,18 +2276,27 @@ function toggleNotifConfig(key) {
 }
 
 async function saveNotificationConfig() {
-  const getCheck = function(id) { var el = document.getElementById(id); return el ? el.checked : true; };
-  const getVal   = function(id) { var el = document.getElementById(id); return el ? el.value : ''; };
+  var getCheck = function(id) { var el = document.getElementById(id); return el ? el.checked : true; };
+  var getVal   = function(id) { var el = document.getElementById(id); return el ? el.value : ''; };
 
-  const data = {
+  // Convertir textareas (una por línea) a formato con comas
+  var ccRaw    = getVal('cfg-ccNumbers').trim().split('\n').map(function(s){ return s.trim(); }).filter(Boolean).join(',');
+  var ccTmbRaw = getVal('cfg-ccNumbersTextMeBot').trim().split('\n').map(function(s){ return s.trim(); }).filter(Boolean).join(',');
+  var tmbKey   = getVal('cfg-textMeBotSenderKey').trim();
+
+  var data = {
     reminderEnabled:    getCheck('cfg-reminderEnabled'),
     receiptEnabled:     getCheck('cfg-receiptEnabled'),
     lateNoticeEnabled:  getCheck('cfg-lateNoticeEnabled'),
     renewalEnabled:     getCheck('cfg-renewalEnabled'),
+    debitNoteEnabled:   getCheck('cfg-debitNoteEnabled'),
     reminderDaysBefore: parseInt(getVal('cfg-reminderDaysBefore') || '3'),
     renewalDaysBefore:  parseInt(getVal('cfg-renewalDaysBefore')  || '30'),
     sendHour:           parseInt(getVal('cfg-sendHour')   || '8'),
     sendMinute:         parseInt(getVal('cfg-sendMinute') || '0'),
+    ccNumbers:             ccRaw    || null,
+    textMeBotSenderKey:    tmbKey   || null,
+    ccNumbersTextMeBot:    ccTmbRaw || null,
   };
 
   await apiFetch('/notifications/config', { method: 'PUT', body: JSON.stringify(data) });
@@ -1713,94 +2304,659 @@ async function saveNotificationConfig() {
   renderNotifications();
 }
 
-async function loadTelegramUpdates() {
-  const el = document.getElementById('telegram-updates');
-  if (!el) return;
-  el.innerHTML = '<div class="spinner"></div>';
+var currentTestChannel = 'textmebot';
 
-  const res     = await apiFetch('/notifications/telegram-updates');
-  const updates = res?.data || [];
-
-  if (updates.length === 0) {
-    el.innerHTML = '<div class="alert alert-info" style="font-size:0.82rem">Sin usuarios recientes. Pedile a tus inquilinos que abran Telegram, busquen el bot y escriban <strong>/start</strong>.</div>';
-    return;
-  }
-
-  el.innerHTML = '<div style="max-height:200px;overflow-y:auto"><table style="width:100%;font-size:0.78rem;border-collapse:collapse"><thead><tr style="background:var(--c-surface-alt)"><th style="padding:6px 10px;text-align:left">Nombre</th><th style="padding:6px 10px;text-align:left">Chat ID</th><th style="padding:6px 10px">Acción</th></tr></thead><tbody>' +
-    updates.map(function(u) {
-      return '<tr style="border-top:1px solid var(--c-border)"><td style="padding:6px 10px"><strong>' + u.firstName + '</strong>' + (u.username ? ' <span class="text-muted">@' + u.username + '</span>' : '') + '</td><td style="padding:6px 10px"><code>' + u.chatId + '</code></td><td style="padding:6px 10px;text-align:center"><button class="btn btn-ghost btn-sm" onclick="copyToClipboard(\'' + u.chatId + '\')">Copiar</button></td></tr>';
-    }).join('') +
-    '</tbody></table></div><div class="form-hint" style="margin-top:8px">Copiá el Chat ID y pegalo en el perfil del inquilino (Inquilinos → Editar).</div>';
-}
-
-function copyToClipboard(text) {
-  navigator.clipboard.writeText(text).then(function() { toast('Chat ID copiado: ' + text); });
-}
-
-function switchTestTab(tab, btn) {
-  document.querySelectorAll('[id^="test-tab-"]').forEach(el => el.style.display = 'none');
-  document.getElementById('test-tab-' + tab).style.display = 'block';
-  document.querySelectorAll('.card .tab-btn').forEach(b => b.classList.remove('active'));
-  btn.classList.add('active');
-  document.getElementById('test-result').innerHTML = '';
+function switchTestChannel(channel) {
+  currentTestChannel = channel;
+  var tmb = document.getElementById('tab-textmebot');
+  var cmb = document.getElementById('tab-callmebot');
+  var lbl = document.getElementById('test-apikey-label');
+  var inp = document.getElementById('test-apikey');
+  if (tmb) tmb.className = channel === 'textmebot' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  if (cmb) cmb.className = channel === 'callmebot' ? 'btn btn-primary btn-sm' : 'btn btn-ghost btn-sm';
+  if (lbl) lbl.textContent = channel === 'textmebot' ? 'API Key de TextMeBot' : 'API Key de CallMeBot';
+  if (inp) inp.placeholder = channel === 'textmebot' ? 'Ej: hAU18CuvHLC8' : 'Ej: 8557256';
+  var resultEl = document.getElementById('test-result');
+  if (resultEl) resultEl.innerHTML = '';
 }
 
 async function sendTestNotification(channel) {
-  const resultEl = document.getElementById('test-result');
-  let body = {};
+  var resultEl = document.getElementById('test-result');
+  var phone    = document.getElementById('test-phone')?.value?.trim();
+  var apiKey   = document.getElementById('test-apikey')?.value?.trim();
 
-  if (channel === 'callmebot') {
-    const phone  = document.getElementById('test-cmb-phone')?.value?.trim();
-    const apiKey = document.getElementById('test-cmb-apikey')?.value?.trim();
-    if (!phone || !apiKey) { toast('Ingresá el número y la API Key de CallMeBot.', 'warning'); return; }
-    body = { phone, apiKey, channel: 'callmebot' };
-  } else {
-    const chatId = document.getElementById('test-chat-id')?.value?.trim();
-    if (!chatId) { toast('Ingresá un Chat ID de Telegram.', 'warning'); return; }
-    body = { chatId, channel: 'telegram' };
-  }
+  if (!phone || !apiKey) { toast('Ingresá el número y la API Key.', 'warning'); return; }
 
-  const res = await apiFetch('/notifications/test', { method: 'POST', body: JSON.stringify(body) });
+  var body = { phone: phone, apiKey: apiKey, channel: channel || 'textmebot' };
 
+  var res = await apiFetch('/notifications/test', { method: 'POST', body: JSON.stringify(body) });
   if (resultEl) {
     resultEl.innerHTML = res?.data?.success
-      ? '<div class="alert alert-success">✅ ' + (res.message || 'Mensaje enviado correctamente') + '</div>'
+      ? '<div class="alert alert-success">✅ ' + (res.message || 'Mensaje enviado') + '</div>'
       : '<div class="alert alert-danger">❌ ' + (res?.message || 'No se pudo enviar') + '</div>';
   }
   loadNotificationLogs();
 }
 
+async function sendCxcReportNow() {
+  var res = await apiFetch('/notifications/send-cxc-report', { method: 'POST' });
+  if (res?.message) toast(res.message);
+  loadNotificationLogs();
+}
+
+async function loadTelegramUpdates() {
+  var el = document.getElementById('telegram-updates');
+  if (!el) return;
+  el.innerHTML = '<div class="spinner"></div>';
+  var res = await apiFetch('/notifications/telegram-updates');
+  var updates = res?.data || [];
+  if (updates.length === 0) {
+    el.innerHTML = '<div class="alert alert-info" style="font-size:0.82rem">Sin usuarios recientes.</div>';
+    return;
+  }
+  el.innerHTML = '<div>' + updates.map(function(u) {
+    return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--c-border)"><span>' + u.firstName + '</span><code style="font-size:0.78rem">' + u.chatId + '</code><button class="btn btn-ghost btn-sm" onclick="copyToClipboard(\'' + u.chatId + '\')">Copiar</button></div>';
+  }).join('') + '</div>';
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(function() { toast('Copiado: ' + text); });
+}
+
 async function loadNotificationLogs() {
-  const res  = await apiFetch('/notifications/logs?limit=20');
-  const logs = res?.data?.logs || [];
-  const el   = document.getElementById('notification-logs');
+  var res  = await apiFetch('/notifications/logs?limit=20');
+  var logs = res?.data?.logs || [];
+  var el   = document.getElementById('notification-logs');
   if (!el) return;
 
-  const typeLabels = { REMINDER:'📅 Recordatorio', RECEIPT:'✅ Recibo', LATE:'⚠️ Mora', RENEWAL:'📋 Renovación', INVOICE:'🧾 Factura', TEST:'🧪 Prueba' };
+  var typeLabels = { REMINDER:'📅 Recordatorio', RECEIPT:'✅ Recibo', LATE:'⚠️ Mora', RENEWAL:'📋 Renovación', INVOICE:'🧾 Factura', TEST:'🧪 Prueba' };
 
   if (logs.length === 0) {
     el.innerHTML = '<div class="empty-state" style="padding:20px"><p>Sin notificaciones enviadas aún</p></div>';
     return;
   }
 
-  el.innerHTML = '<div style="max-height:320px;overflow-y:auto"><table style="width:100%;font-size:0.78rem;border-collapse:collapse"><thead><tr style="background:var(--c-surface-alt)"><th style="padding:6px 10px;text-align:left">Tipo</th><th style="padding:6px 10px;text-align:left">Destinatario</th><th style="padding:6px 10px;text-align:left">Estado</th><th style="padding:6px 10px;text-align:left">Fecha</th></tr></thead><tbody>' +
+  el.innerHTML = '<div style="max-height:320px;overflow-y:auto"><table style="width:100%;font-size:0.78rem;border-collapse:collapse"><thead><tr style="background:var(--c-surface-alt)"><th style="padding:6px 10px;text-align:left">Tipo</th><th style="padding:6px 10px;text-align:left">Número</th><th style="padding:6px 10px;text-align:left">Estado</th><th style="padding:6px 10px;text-align:left">Fecha</th></tr></thead><tbody>' +
     logs.map(function(log) {
-      var statusBadge = log.status === 'SENT' ? '<span class="badge badge-success">Enviado</span>' : log.status === 'FAILED' ? '<span class="badge badge-danger">Falló</span>' : '<span class="badge badge-neutral">Omitido</span>';
-      return '<tr style="border-top:1px solid var(--c-border)"><td style="padding:6px 10px">' + (typeLabels[log.type]||log.type) + '</td><td style="padding:6px 10px"><div style="font-family:var(--font-mono);font-size:0.75rem">' + log.toPhone + '</div>' + (log.tenantName ? '<div class="text-muted" style="font-size:0.7rem">' + log.tenantName + '</div>' : '') + '</td><td style="padding:6px 10px">' + statusBadge + (log.errorMessage ? '<div style="font-size:0.68rem;color:var(--c-danger)">' + log.errorMessage.slice(0,35) + '</div>' : '') + '</td><td style="padding:6px 10px;color:var(--c-text-muted)">' + formatDateTime(log.sentAt) + '</td></tr>';
+      var badge = log.status==='SENT' ? '<span class="badge badge-success">Enviado</span>' : log.status==='FAILED' ? '<span class="badge badge-danger">Falló</span>' : '<span class="badge badge-neutral">Omitido</span>';
+      var errEsc = (log.errorMessage || '').replace(/"/g, '&quot;');
+      var errHtml = log.errorMessage ? '<div style="font-size:0.7rem;color:var(--c-text-muted);margin-top:3px;max-width:260px;white-space:normal;line-height:1.3" title="' + errEsc + '">' + log.errorMessage + '</div>' : '';
+      return '<tr style="border-top:1px solid var(--c-border)"><td style="padding:6px 10px;vertical-align:top">' + (typeLabels[log.type]||log.type) + '</td><td style="padding:6px 10px;font-family:var(--font-mono);font-size:0.75rem;vertical-align:top">' + log.toPhone + '</td><td style="padding:6px 10px;vertical-align:top">' + badge + errHtml + '</td><td style="padding:6px 10px;color:var(--c-text-muted);vertical-align:top">' + formatDateTime(log.sentAt) + '</td></tr>';
     }).join('') +
     '</tbody></table></div>';
 }
 
 async function clearOldLogs() {
   if (!confirm('¿Eliminás los logs con más de 30 días?')) return;
-  const res = await apiFetch('/notifications/logs', {
-    method: 'DELETE',
-    body: JSON.stringify({ olderThanDays: 30 }),
-  });
+  var res = await apiFetch('/notifications/logs', { method: 'DELETE', body: JSON.stringify({ olderThanDays: 30 }) });
   toast(res?.message || 'Logs eliminados.');
   loadNotificationLogs();
 }
 
+
+// ── Notas de Débito ────────────────────────────────────────────
+const SERVICE_ICONS = { AGUA:'💧', LUZ:'⚡', GAS:'🔥', INTERNET:'🌐', BASURA:'🗑️', OTRO:'📋' };
+const SERVICE_LABELS = { AGUA:'Agua (SANAA)', LUZ:'Energía eléctrica (ENEE)', GAS:'Gas', INTERNET:'Internet / Cable', BASURA:'Recolección de basura', OTRO:'Otro cargo' };
+
+async function renderDebitNotes() {
+  const now   = new Date();
+  const month = now.getMonth() + 1;
+  const year  = now.getFullYear();
+
+  const [summaryRes, notesRes] = await Promise.all([
+    apiFetch(`/debit-notes/summary?month=${month}&year=${year}`),
+    apiFetch(`/debit-notes?month=${month}&year=${year}`),
+  ]);
+
+  const summary = summaryRes?.data || {};
+  const notes   = notesRes?.data  || [];
+
+  const content = document.getElementById('page-content');
+  content.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h2>Notas de Débito</h2>
+        <p>Cargos por servicios públicos incluidos en el cobro del local</p>
+      </div>
+      <button class="btn btn-primary" onclick="openModal('modal-new-debit-note')">
+        <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Nueva nota de débito
+      </button>
+    </div>
+
+    <!-- Filtro de período -->
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:20px">
+      <span class="text-muted" style="font-size:0.85rem">Período:</span>
+      <select id="dn-month" class="form-control" style="width:auto" onchange="reloadDebitNotes()">
+        ${MONTHS_ES.slice(1).map((m,i) => `<option value="${i+1}" ${i+1===month?'selected':''}>${m}</option>`).join('')}
+      </select>
+      <input id="dn-year" class="form-control" type="number" style="width:90px" value="${year}" onchange="reloadDebitNotes()">
+    </div>
+
+    <!-- Resumen por inquilino -->
+    ${(summary.contracts||[]).length > 0 ? `
+    <div class="card" style="margin-bottom:20px;padding:0">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--c-border)">
+        <strong style="font-size:0.88rem">📊 Resumen del período — ${MONTHS_ES[month]} ${year}</strong>
+        <span class="text-muted" style="margin-left:12px;font-size:0.82rem">${summary.totalNotes} cargo(s) pendientes</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Inquilino</th><th>Unidad</th><th>Servicios</th><th>Total HNL</th><th>Total USD</th></tr></thead>
+          <tbody>
+            ${(summary.contracts||[]).map(g => `<tr>
+              <td><strong>${g.tenantName}</strong></td>
+              <td class="text-muted">${g.propertyUnit}</td>
+              <td>${g.items.map(n => `<span class="badge badge-neutral" style="margin-right:4px">${SERVICE_ICONS[n.serviceType]||'📋'} ${SERVICE_LABELS[n.serviceType]||n.serviceType}</span>`).join('')}</td>
+              <td class="td-mono">${g.totalHNL > 0 ? formatMoney(g.totalHNL,'HNL') : '—'}</td>
+              <td class="td-mono">${g.totalUSD > 0 ? formatMoney(g.totalUSD,'USD') : '—'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </div>` : ''}
+
+    <!-- Listado completo -->
+    <div class="card" style="padding:0">
+      <div style="padding:14px 20px;border-bottom:1px solid var(--c-border)">
+        <strong style="font-size:0.88rem">Todas las notas — ${MONTHS_ES[month]} ${year}</strong>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Servicio</th><th>Inquilino</th><th>Unidad</th><th>Descripción</th><th>N° Factura</th><th>Monto</th><th>Cargo Total Inquilino</th><th>Estado</th><th>Acciones</th>
+          </tr></thead>
+          <tbody>
+            ${(() => {
+              if (notes.length === 0) return '<tr><td colspan="9"><div class="empty-state" style="padding:30px">Sin notas de débito en este período. Creá la primera con el botón de arriba.</div></td></tr>';
+
+              // Calcular cargo total por contrato (solo PENDING e INCLUDED)
+              const totByContract = {};
+              notes.forEach(n => {
+                if (n.status === 'WAIVED') return;
+                const key = n.contractId || n.contract?.id;
+                if (!totByContract[key]) totByContract[key] = { HNL: 0, USD: 0, count: 0 };
+                if (n.currency === 'HNL') totByContract[key].HNL += parseFloat(n.amount||0);
+                else totByContract[key].USD += parseFloat(n.amount||0);
+                totByContract[key].count++;
+              });
+
+              // Track which contract already showed the total (show only on first row)
+              const shown = {};
+              let totalHNL = 0, totalUSD = 0;
+              notes.forEach(n => { if (n.status !== 'WAIVED') { if (n.currency==='HNL') totalHNL += parseFloat(n.amount||0); else totalUSD += parseFloat(n.amount||0); } });
+
+              const rows = notes.map(n => {
+                const key = n.contractId || n.contract?.id;
+                const tot = totByContract[key];
+                let cargoCell = '—';
+                if (tot && !shown[key] && n.status !== 'WAIVED') {
+                  const parts = [];
+                  if (tot.HNL > 0) parts.push(`L ${tot.HNL.toLocaleString('es-HN',{minimumFractionDigits:2})}`);
+                  if (tot.USD > 0) parts.push(`$ ${tot.USD.toLocaleString('es-HN',{minimumFractionDigits:2})}`);
+                  cargoCell = `<span class="td-mono" style="font-weight:700;color:var(--c-primary)">${parts.join(' + ')}</span><br><span class="text-muted" style="font-size:0.75rem">${tot.count} servicio(s)</span>`;
+                  shown[key] = true;
+                }
+                return `<tr>
+                  <td><span style="font-size:1.1rem">${SERVICE_ICONS[n.serviceType]||'📋'}</span> ${SERVICE_LABELS[n.serviceType]||n.serviceType}</td>
+                  <td><strong>${n.contract?.tenant?.firstName} ${n.contract?.tenant?.lastName}</strong></td>
+                  <td class="text-muted">${n.contract?.unit?.property?.name} — ${n.contract?.unit?.number}</td>
+                  <td>${n.description}</td>
+                  <td class="td-mono">${n.invoiceRef || '—'}</td>
+                  <td class="td-mono"><strong>${formatMoney(n.amount, n.currency)}</strong></td>
+                  <td>${cargoCell}</td>
+                  <td>
+                    <span class="badge ${n.status==='PENDING'?'badge-warning':n.status==='INCLUDED'?'badge-success':'badge-neutral'}">
+                      ${n.status==='PENDING'?'Pendiente':n.status==='INCLUDED'?'Cobrada':'Anulada'}
+                    </span>
+                  </td>
+                  <td>
+                    <div class="flex gap-2">
+                      ${n.status==='PENDING' ? `
+                        <button class="btn btn-primary btn-sm" onclick="openRegisterDebitNotePayment('${n.id}')">Registrar cobro</button>
+                        <button class="btn btn-ghost btn-sm" onclick="openEditDebitNote('${n.id}')">Editar</button>
+                        <button class="btn btn-ghost btn-sm" style="color:var(--c-primary)" onclick="notifyDebitNote('${n.id}')">
+                          <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                          Notificar
+                        </button>
+                        <button class="btn btn-ghost btn-sm" style="color:var(--c-danger)" onclick="cancelDebitNote('${n.id}')">Anular</button>
+                      ` : '—'}
+                    </div>
+                  </td>
+                </tr>`;
+              });
+
+              // Fila de total global del período
+              const totalParts = [];
+              if (totalHNL > 0) totalParts.push(`L ${totalHNL.toLocaleString('es-HN',{minimumFractionDigits:2})}`);
+              if (totalUSD > 0) totalParts.push(`$ ${totalUSD.toLocaleString('es-HN',{minimumFractionDigits:2})}`);
+              rows.push(`<tr style="background:var(--c-surface-alt);font-weight:700">
+                <td colspan="5" style="text-align:right;padding:8px 14px">TOTAL DEL PERÍODO</td>
+                <td class="td-mono" style="color:var(--c-primary)">${totalParts.join(' + ') || '—'}</td>
+                <td colspan="3"></td>
+              </tr>`);
+
+              return rows.join('');
+            })()}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Modal nueva nota de débito -->
+    <div id="modal-new-debit-note" class="modal-backdrop" style="display:none">
+      <div class="modal modal-lg">
+        <div class="modal-header">
+          <span class="modal-title">Nueva nota de débito</span>
+          <button class="modal-close" onclick="closeModal('modal-new-debit-note')">
+            <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <div class="modal-body" id="new-dn-body">
+          <div class="spinner"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-ghost" onclick="closeModal('modal-new-debit-note')">Cancelar</button>
+          <button class="btn btn-primary" onclick="submitDebitNote()">Registrar cargo</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Cargar contratos activos en el modal
+  loadDebitNoteForm();
+}
+
+async function loadDebitNoteForm() {
+  const body = document.getElementById('new-dn-body');
+  if (!body) return;
+
+  const res       = await apiFetch('/contracts?status=ACTIVE&limit=100');
+  const contracts = res?.data || [];
+  const now       = new Date();
+
+  const serviceOptions = Object.entries(SERVICE_LABELS)
+    .map(([k,v]) => `<option value="${k}">${SERVICE_ICONS[k]} ${v}</option>`).join('');
+
+  body.innerHTML = `
+    <div class="form-group">
+      <label class="form-label">Contrato / Inquilino <span>*</span></label>
+      <select id="dn-contract" class="form-control">
+        <option value="">Seleccioná un contrato activo...</option>
+        ${contracts.map(c => `<option value="${c.id}">${c.tenant?.firstName} ${c.tenant?.lastName} — ${c.unit?.property?.name} ${c.unit?.number}</option>`).join('')}
+      </select>
+    </div>
+    <div class="form-grid">
+      <div class="form-group">
+        <label class="form-label">Mes <span>*</span></label>
+        <select id="dn-month-sel" class="form-control">
+          ${MONTHS_ES.slice(1).map((m,i) => `<option value="${i+1}" ${i+1===now.getMonth()+1?'selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Año <span>*</span></label>
+        <input id="dn-year-inp" class="form-control" type="number" value="${now.getFullYear()}">
+      </div>
+    </div>
+
+    <!-- Servicios múltiples -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <label class="form-label" style="margin:0">Servicios <span>*</span></label>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="addDebitNoteServiceRow()">
+        <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Agregar servicio
+      </button>
+    </div>
+    <div id="dn-services-list">
+      <!-- primera fila de servicio -->
+      ${buildDnServiceRow(0, serviceOptions)}
+    </div>
+    <div id="dn-total-preview" style="text-align:right;font-size:0.82rem;color:var(--c-text-muted);margin-top:4px"></div>
+
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">Notas adicionales</label>
+      <textarea id="dn-notes" class="form-control" rows="2" placeholder="Observaciones internas..."></textarea>
+    </div>
+  `;
+}
+
+function buildDnServiceRow(idx, serviceOptions) {
+  const opts = serviceOptions || Object.entries(SERVICE_LABELS)
+    .map(([k,v]) => `<option value="${k}">${SERVICE_ICONS[k]} ${v}</option>`).join('');
+  return `
+    <div class="dn-service-row" id="dn-row-${idx}" style="border:1px solid var(--c-border);border-radius:6px;padding:10px 12px;margin-bottom:8px;background:var(--c-surface)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-size:0.8rem;font-weight:600;color:var(--c-text-muted)">Servicio ${idx+1}</span>
+        ${idx > 0 ? `<button type="button" class="btn btn-ghost btn-sm" style="color:var(--c-danger);padding:2px 6px" onclick="removeDnServiceRow(${idx})">✕ Quitar</button>` : ''}
+      </div>
+      <div class="form-grid" style="margin-bottom:8px">
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="font-size:0.78rem">Tipo de servicio</label>
+          <select class="form-control dn-svc-type" data-row="${idx}" onchange="updateDnTotal()">${opts}</select>
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="font-size:0.78rem">N° Factura</label>
+          <input class="form-control td-mono dn-svc-invoice" data-row="${idx}" placeholder="Ej: 00123456">
+        </div>
+      </div>
+      <div class="form-group" style="margin-bottom:8px">
+        <label class="form-label" style="font-size:0.78rem">Descripción <span>*</span></label>
+        <input class="form-control dn-svc-desc" data-row="${idx}" placeholder="Ej: Factura SANAA mayo, cta #12345">
+      </div>
+      <div class="form-grid" style="margin:0">
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="font-size:0.78rem">Monto <span>*</span></label>
+          <input class="form-control td-mono dn-svc-amount" data-row="${idx}" type="number" step="0.01" min="0.01" placeholder="0.00" oninput="updateDnTotal()">
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="font-size:0.78rem">Moneda</label>
+          <select class="form-control dn-svc-currency" data-row="${idx}" onchange="updateDnTotal()">
+            <option value="HNL">HNL — Lempiras</option>
+            <option value="USD">USD — Dólares</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin:0">
+          <label class="form-label" style="font-size:0.78rem">Fecha factura</label>
+          <input class="form-control dn-svc-date" data-row="${idx}" type="date">
+        </div>
+      </div>
+    </div>`;
+}
+
+let _dnRowCount = 1;
+function addDebitNoteServiceRow() {
+  const list = document.getElementById('dn-services-list');
+  if (!list) return;
+  const serviceOptions = Object.entries(SERVICE_LABELS)
+    .map(([k,v]) => `<option value="${k}">${SERVICE_ICONS[k]} ${v}</option>`).join('');
+  const div = document.createElement('div');
+  div.innerHTML = buildDnServiceRow(_dnRowCount, serviceOptions);
+  list.appendChild(div.firstElementChild);
+  _dnRowCount++;
+}
+
+function removeDnServiceRow(idx) {
+  document.getElementById(`dn-row-${idx}`)?.remove();
+  updateDnTotal();
+}
+
+function updateDnTotal() {
+  const amounts  = [...document.querySelectorAll('.dn-svc-amount')];
+  const currencies = [...document.querySelectorAll('.dn-svc-currency')];
+  let hnl = 0, usd = 0;
+  amounts.forEach((inp, i) => {
+    const val  = parseFloat(inp.value) || 0;
+    const curr = currencies[i]?.value || 'HNL';
+    if (curr === 'HNL') hnl += val; else usd += val;
+  });
+  const preview = document.getElementById('dn-total-preview');
+  if (!preview) return;
+  const parts = [];
+  if (hnl > 0) parts.push(`L ${hnl.toLocaleString('es-HN',{minimumFractionDigits:2})}`);
+  if (usd > 0) parts.push(`$ ${usd.toLocaleString('es-HN',{minimumFractionDigits:2})}`);
+  preview.textContent = parts.length ? `Total: ${parts.join(' + ')}` : '';
+}
+
+async function submitDebitNote() {
+  _dnRowCount = 1; // reset counter
+  const contractId  = document.getElementById('dn-contract')?.value;
+  const periodMonth = document.getElementById('dn-month-sel')?.value;
+  const periodYear  = document.getElementById('dn-year-inp')?.value;
+  const notes       = document.getElementById('dn-notes')?.value?.trim();
+
+  if (!contractId) { toast('Seleccioná un contrato.', 'warning'); return; }
+
+  // Collect all service rows
+  const rows = [...document.querySelectorAll('.dn-service-row')];
+  if (rows.length === 0) { toast('Agregá al menos un servicio.', 'warning'); return; }
+
+  const services = [];
+  for (const row of rows) {
+    const desc   = row.querySelector('.dn-svc-desc')?.value?.trim();
+    const amount = parseFloat(row.querySelector('.dn-svc-amount')?.value);
+    const svcType = row.querySelector('.dn-svc-type')?.value;
+    const currency = row.querySelector('.dn-svc-currency')?.value;
+    const invoiceRef = row.querySelector('.dn-svc-invoice')?.value?.trim();
+    const invoiceDate = row.querySelector('.dn-svc-date')?.value;
+    if (!desc) { toast('Ingresá la descripción de cada servicio.', 'warning'); return; }
+    if (!amount || amount <= 0) { toast('Ingresá un monto válido en cada servicio.', 'warning'); return; }
+    services.push({ serviceType: svcType, description: desc, amount, currency, invoiceRef: invoiceRef||undefined, invoiceDate: invoiceDate||undefined });
+  }
+
+  // POST each service as a separate debit note (one per service, same contract+period)
+  let created = 0;
+  for (const svc of services) {
+    await apiFetch('/debit-notes', {
+      method: 'POST',
+      body: JSON.stringify({ contractId, periodMonth, periodYear, notes: notes||undefined, ...svc }),
+    });
+    created++;
+  }
+
+  toast(`✅ ${created} nota(s) de débito registradas correctamente.`);
+  closeModal('modal-new-debit-note');
+  renderDebitNotes();
+}
+
+async function openEditDebitNote(id) {
+  const res = await apiFetch(`/debit-notes/${id}`);
+  const n   = res?.data;
+  if (!n) return;
+
+  const existing = document.getElementById('modal-edit-debit-note');
+  if (existing) existing.remove();
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-edit-debit-note';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Editar nota de débito</span>
+        <button class="modal-close" onclick="closeModal('modal-edit-debit-note');document.getElementById('modal-edit-debit-note').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="edit-dn-id" value="${n.id}">
+        <div class="form-group">
+          <label class="form-label">Tipo de servicio</label>
+          <select id="edit-dn-service" class="form-control">
+            ${Object.entries(SERVICE_LABELS).map(([k,v]) => `<option value="${k}" ${k===n.serviceType?'selected':''}>${SERVICE_ICONS[k]} ${v}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Descripción <span>*</span></label>
+          <input id="edit-dn-desc" class="form-control" value="${n.description}">
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">Monto <span>*</span></label>
+            <input id="edit-dn-amount" class="form-control td-mono" type="number" step="0.01" value="${parseFloat(n.amount).toFixed(2)}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Moneda</label>
+            <select id="edit-dn-currency" class="form-control">
+              <option value="HNL" ${n.currency==='HNL'?'selected':''}>HNL</option>
+              <option value="USD" ${n.currency==='USD'?'selected':''}>USD</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">N° Factura del servicio</label>
+            <input id="edit-dn-invoice-ref" class="form-control td-mono" value="${n.invoiceRef||''}">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Fecha de la factura</label>
+            <input id="edit-dn-invoice-date" class="form-control" type="date" value="${n.invoiceDate?n.invoiceDate.split('T')[0]:''}">
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas</label>
+          <textarea id="edit-dn-notes" class="form-control" rows="2">${n.notes||''}</textarea>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-edit-debit-note');document.getElementById('modal-edit-debit-note').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="submitEditDebitNote()">Guardar cambios</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  openModal('modal-edit-debit-note');
+}
+
+async function submitEditDebitNote() {
+  const id          = document.getElementById('edit-dn-id')?.value;
+  const serviceType = document.getElementById('edit-dn-service')?.value;
+  const description = document.getElementById('edit-dn-desc')?.value?.trim();
+  const amount      = document.getElementById('edit-dn-amount')?.value;
+  const currency    = document.getElementById('edit-dn-currency')?.value;
+  const invoiceRef  = document.getElementById('edit-dn-invoice-ref')?.value?.trim();
+  const invoiceDate = document.getElementById('edit-dn-invoice-date')?.value;
+  const notes       = document.getElementById('edit-dn-notes')?.value?.trim();
+
+  if (!description || !amount) { toast('Completá los campos requeridos.', 'warning'); return; }
+
+  await apiFetch(`/debit-notes/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify({ serviceType, description, amount: parseFloat(amount), currency, invoiceRef: invoiceRef||undefined, invoiceDate: invoiceDate||undefined, notes: notes||undefined }),
+  });
+
+  toast('✅ Nota de débito actualizada.');
+  closeModal('modal-edit-debit-note');
+  document.getElementById('modal-edit-debit-note')?.remove();
+  renderDebitNotes();
+}
+
+async function cancelDebitNote(id) {
+  const reason = prompt('Motivo de anulación:');
+  if (!reason) return;
+  await apiFetch(`/debit-notes/${id}/cancel`, {
+    method: 'POST',
+    body: JSON.stringify({ reason }),
+  });
+  toast('Nota de débito anulada.');
+  renderDebitNotes();
+}
+
+async function notifyDebitNote(id) {
+  const res = await apiFetch(`/debit-notes/${id}/notify`, { method: 'POST' });
+  if (res?.message) toast(res.message);
+}
+
+async function openRegisterDebitNotePayment(id) {
+  const res = await apiFetch(`/debit-notes/${id}`);
+  const n   = res?.data;
+  if (!n) { toast('No se pudo cargar la nota de débito.', 'danger'); return; }
+
+  const existing = document.getElementById('modal-register-dn-payment');
+  if (existing) existing.remove();
+
+  const tenantName = `${n.contract?.tenant?.firstName || ''} ${n.contract?.tenant?.lastName || ''}`.trim();
+  const propUnit   = `${(n.contract?.unit?.property?.name || '').replace(/'/g,'&#39;')} — ${n.contract?.unit?.number || ''}`;
+  const servicio    = (SERVICE_LABELS[n.serviceType] || n.serviceType || '').replace(/'/g,'&#39;');
+  const monto       = formatMoney(n.amount, n.currency);
+
+  const modal = document.createElement('div');
+  modal.id = 'modal-register-dn-payment';
+  modal.className = 'modal-backdrop';
+  modal.style.display = 'none';
+  modal.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <span class="modal-title">Registrar cobro de nota de débito</span>
+        <button class="modal-close" onclick="closeModal('modal-register-dn-payment');document.getElementById('modal-register-dn-payment').remove()">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="dn-pay-id" value="${n.id}">
+        <div class="alert alert-info" style="margin-bottom:16px">
+          <strong>${tenantName}</strong> — ${propUnit}<br>
+          ${SERVICE_ICONS[n.serviceType]||'📋'} ${servicio}
+        </div>
+        <div class="form-group">
+          <label class="form-label">Monto del cargo</label>
+          <div style="font-size:1.4rem;font-weight:700;color:var(--c-primary)" class="td-mono">${monto}</div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Notas del cobro</label>
+          <input id="dn-pay-notes" class="form-control" placeholder="Ej: Pagado junto con la renta">
+        </div>
+        <div class="form-group">
+          <label class="form-label">📎 Comprobante de pago <span class="text-muted" style="font-size:0.75rem">(opcional)</span></label>
+          <input id="dn-pay-proof" class="form-control" type="file" accept="image/*,.pdf"
+            style="padding:6px" onchange="previewProofFile2('dn-pay-proof','dn-pay-proof-preview')">
+          <div class="form-hint">Se enviará al inquilino y a los CC por WhatsApp al confirmar</div>
+          <div id="dn-pay-proof-preview" style="margin-top:8px;display:none">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px;background:var(--c-primary-lt);border-radius:var(--radius-md)">
+              <span id="dn-pay-proof-icon" style="font-size:1.1rem">📄</span>
+              <span id="dn-pay-proof-name" style="font-size:0.82rem;font-weight:600"></span>
+              <button class="btn btn-ghost btn-sm" style="margin-left:auto;color:var(--c-danger)" onclick="clearProofFile2('dn-pay-proof','dn-pay-proof-preview')">✕</button>
+            </div>
+          </div>
+        </div>
+        <div class="alert alert-success" style="font-size:0.82rem">
+          ✅ Al confirmar, la nota cambiará a estado <strong>Cobrada</strong> y se enviará notificación
+          al inquilino y a los números CC por WhatsApp.
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal('modal-register-dn-payment');document.getElementById('modal-register-dn-payment').remove()">Cancelar</button>
+        <button class="btn btn-primary" onclick="submitDebitNotePayment()">✓ Confirmar cobro</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(modal);
+  openModal('modal-register-dn-payment');
+}
+
+async function submitDebitNotePayment() {
+  const id    = document.getElementById('dn-pay-id')?.value;
+  const notes = document.getElementById('dn-pay-notes')?.value?.trim();
+
+  // Leer adjunto si fue seleccionado
+  const proofFile = document.getElementById('dn-pay-proof')?.files?.[0];
+  let proofBase64 = null, proofMime = null, proofName = null;
+  if (proofFile) {
+    proofBase64 = await new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload  = () => resolve(r.result.split(',')[1]);
+      r.onerror = reject;
+      r.readAsDataURL(proofFile);
+    });
+    proofMime = proofFile.type;
+    proofName = proofFile.name;
+  }
+
+  const res = await apiFetch(`/debit-notes/${id}/register-payment`, {
+    method: 'POST',
+    body: JSON.stringify({
+      notes: notes || undefined,
+      ...(proofBase64 && { proofBase64, proofMime, proofName }),
+    }),
+  });
+
+  toast(res?.message || '✅ Cobro registrado correctamente.');
+  closeModal('modal-register-dn-payment');
+  document.getElementById('modal-register-dn-payment')?.remove();
+  renderDebitNotes();
+}
+
+async function reloadDebitNotes() {
+  const month = document.getElementById('dn-month')?.value || new Date().getMonth() + 1;
+  const year  = document.getElementById('dn-year')?.value  || new Date().getFullYear();
+
+  const [summaryRes, notesRes] = await Promise.all([
+    apiFetch(`/debit-notes/summary?month=${month}&year=${year}`),
+    apiFetch(`/debit-notes?month=${month}&year=${year}`),
+  ]);
+  // Re-renderizar solo la tabla y resumen
+  renderDebitNotes();
+}
 
 // ── Tipo de Cambio ─────────────────────────────────────────────
 async function renderExchangeRates() {
@@ -1833,7 +2989,7 @@ async function renderExchangeRates() {
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </div>
         <div class="stat-value">L ${parseFloat(todayRate || 0).toFixed(4)}</div>
-        <div class="stat-label">Tasa USD/HNL de hoy</div>
+        <div class="stat-label">Tasa de VENTA de hoy (Banpaís)</div>
       </div>
       <div class="stat-card" style="cursor:pointer" onclick="openModal('modal-manual-rate')">
         <div class="stat-icon blue">
@@ -1844,25 +3000,32 @@ async function renderExchangeRates() {
       </div>
     </div>
 
-    <div class="card" style="padding:0">
-      <div style="padding:16px 20px;border-bottom:1px solid var(--c-border);display:flex;justify-content:space-between;align-items:center">
-        <strong style="font-size:0.88rem">Historial (últimos 30 días)</strong>
-        <span class="text-muted" style="font-size:0.75rem">Hacé clic en una fila para editar esa tasa</span>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Fecha</th><th>Tasa (L por 1 USD)</th><th>Fuente</th><th>Acción</th></tr></thead>
-          <tbody>
-            ${history.map(r => `<tr>
-              <td>${formatDate(r.date)}</td>
-              <td class="td-mono">L ${parseFloat(r.rate).toFixed(4)}</td>
-              <td class="text-muted">${r.source}</td>
-              <td>
-                <button class="btn btn-ghost btn-sm" onclick="openEditRate('${r.date}', ${parseFloat(r.rate).toFixed(4)})">Editar</button>
-              </td>
-            </tr>`).join('') || '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--c-text-muted)">Sin historial</td></tr>'}
-          </tbody>
-        </table>
+    <div class="tabs" id="er-tabs" style="margin-bottom:0">
+      <button class="tab-btn active" onclick="switchErTab('local', this)">📋 Historial Local</button>
+      <button class="tab-btn" onclick="switchErTab('bch', this)">🏦 BCH — Banco Central</button>
+    </div>
+
+    <div id="er-tab-content">
+      <div class="card" style="padding:0;border-top:none;border-radius:0 0 8px 8px">
+        <div style="padding:16px 20px;border-bottom:1px solid var(--c-border);display:flex;justify-content:space-between;align-items:center">
+          <strong style="font-size:0.88rem">Historial local (últimos 30 días)</strong>
+          <span class="text-muted" style="font-size:0.75rem">Clic en una fila para editar esa tasa</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Fecha</th><th>Tasa de Venta (L por 1 USD)</th><th>Fuente</th><th>Acción</th></tr></thead>
+            <tbody>
+              ${history.map(r => `<tr>
+                <td>${formatDate(r.date)}</td>
+                <td class="td-mono">L ${parseFloat(r.rate).toFixed(4)}</td>
+                <td class="text-muted">${r.source}</td>
+                <td>
+                  <button class="btn btn-ghost btn-sm" onclick="openEditRate('${r.date}', ${parseFloat(r.rate).toFixed(4)})">Editar</button>
+                </td>
+              </tr>`).join('') || '<tr><td colspan="4" style="text-align:center;padding:24px;color:var(--c-text-muted)">Sin historial</td></tr>'}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
 
@@ -1919,6 +3082,27 @@ async function saveManualRate() {
   if (!rate || rate <= 0) { toast('Ingresá una tasa válida mayor a 0.', 'warning'); return; }
   if (rate < 20 || rate > 100) { toast('La tasa parece incorrecta. Verificá el valor (debe estar entre 20 y 100 L/USD).', 'warning'); return; }
 
+  // Verificar si la tasa es menor a la del BCH
+  try {
+    const bchRes = await apiFetch('/exchange-rates/today');
+    const bchRate = parseFloat(bchRes?.data?.rate || 0);
+    if (bchRate > 0 && rate < bchRate) {
+      const confirm = window.confirm(
+        `⚠️ ADVERTENCIA: Tasa de Cambio Inferior al BCH\n\n` +
+        `Tasa ingresada:  L ${rate.toFixed(4)}\n` +
+        `Tasa BCH actual: L ${bchRate.toFixed(4)}\n\n` +
+        `La tasa que ingresaste es MENOR a la oficial del Banco Central de Honduras.\n` +
+        `Esto puede generar conversiones incorrectas en los reportes.\n\n` +
+        `¿Desea guardar de todas formas?`
+      );
+      if (!confirm) return;
+      // Guardar flag para que el reporte CxC lo muestre
+      try { localStorage.setItem('cxc_low_rate_warning', JSON.stringify({ date, rate, bchRate, savedAt: new Date().toISOString() })); } catch(e) {}
+    } else {
+      try { localStorage.removeItem('cxc_low_rate_warning'); } catch(e) {}
+    }
+  } catch(_e) { /* si no se puede verificar, continuar */ }
+
   await apiFetch('/exchange-rates/manual', {
     method: 'POST',
     body: JSON.stringify({ date, rate }),
@@ -1927,6 +3111,59 @@ async function saveManualRate() {
   toast(`✅ Tasa del ${formatDate(date)} guardada: L ${rate.toFixed(4)}`);
   closeModal('modal-manual-rate');
   renderExchangeRates();
+}
+
+async function switchErTab(tab, btn) {
+  document.querySelectorAll('#er-tabs .tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (tab === 'bch') {
+    document.getElementById('er-tab-content').innerHTML =
+      '<div class="empty-state"><div class="spinner"></div><p style="margin-top:12px">Cargando tasas del Banco Central...</p></div>';
+    await loadBchRates();
+  } else {
+    renderExchangeRates();
+  }
+}
+
+async function loadBchRates() {
+  const res = await apiFetch('/exchange-rates/bch-historical?days=30');
+  const el  = document.getElementById('er-tab-content');
+  if (!el) return;
+
+  const rates  = res?.data?.rates  || [];
+  const source = res?.data?.source || 'local';
+  const isFallback = res?.data?.fallback;
+
+  el.innerHTML = `
+    <div class="card" style="padding:0;border-top:none;border-radius:0 0 8px 8px">
+      ${isFallback ? `<div class="alert alert-warning" style="margin:12px 16px 0">
+        ⚠️ No se pudo conectar al BCH directamente. Mostrando historial local como referencia.
+      </div>` : ''}
+      <div style="padding:16px 20px;border-bottom:1px solid var(--c-border);display:flex;justify-content:space-between;align-items:center">
+        <strong style="font-size:0.88rem">Tasas ${isFallback ? 'históricas locales' : 'Banco Central de Honduras'} — últimos 30 días</strong>
+        <span class="text-muted" style="font-size:0.75rem">Fuente: ${source === 'BCH' ? 'bch.hn' : 'historial local'}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Fecha</th><th>Compra (L/USD)</th><th>Venta (L/USD)</th><th>Fuente</th><th>Usar esta tasa</th></tr></thead>
+          <tbody>
+            ${rates.map(r => {
+              const fecha = r.fecha ? formatDate(r.fecha) : '—';
+              const compra = parseFloat(r.compra||r.rate||0).toFixed(4);
+              const venta  = parseFloat(r.venta ||r.rate||0).toFixed(4);
+              const rawDate = (r.fecha||'').toString().split('T')[0];
+              return `<tr>
+                <td>${fecha}</td>
+                <td class="td-mono">L ${compra}</td>
+                <td class="td-mono">L ${venta}</td>
+                <td class="text-muted">${r.source||'BCH'}</td>
+                <td><button class="btn btn-ghost btn-sm" onclick="openEditRate('${rawDate}', ${venta})">Usar venta</button></td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--c-text-muted)">Sin datos disponibles</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 async function forceRateUpdate() {
@@ -1958,6 +3195,7 @@ async function renderReports() {
       <button class="tab-btn" onclick="switchReportTab('mora', this)">🔴 Mora</button>
       <button class="tab-btn" onclick="switchReportTab('ocupacion', this)">🏠 Ocupación</button>
       <button class="tab-btn" onclick="switchReportTab('fiscal', this)">🧾 Fiscal SAR</button>
+      <button class="tab-btn" onclick="switchReportTab('cxc', this)">📋 Cuentas x Cobrar</button>
     </div>
 
     <div id="report-content">
@@ -1994,6 +3232,9 @@ async function loadReportTab(tab) {
   } else if (tab === 'fiscal') {
     const res = await apiFetch(`/invoices/report?month=${month}&year=${year}`);
     el.innerHTML = renderReportFiscal(res?.data, month, year);
+  } else if (tab === 'cxc') {
+    el.innerHTML = await renderReportCxC();
+    await loadCxcReport();
   }
 }
 
@@ -2194,6 +3435,521 @@ function renderReportFiscal(report, month, year) {
     </div>`;
 }
 
+
+// ── Reporte Cuentas por Cobrar ───────────────────────────────────
+async function renderReportCxC() {
+  // Cargar lista de inquilinos para el filtro
+  let tenantsOptions = '<option value="">— Todos los clientes —</option>';
+  try {
+    const tr = await apiFetch('/tenants?limit=200');
+    (tr?.data || []).forEach(t => {
+      tenantsOptions += `<option value="${t.id}">${t.firstName} ${t.lastName}${t.phone ? ' · ' + t.phone : ''}</option>`;
+    });
+  } catch(e) { /* silenciar */ }
+
+  const today = new Date();
+  const firstOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0,10);
+  const lastOfMonth  = new Date(today.getFullYear(), today.getMonth()+1, 0).toISOString().slice(0,10);
+
+  return `
+    <div class="card" style="margin-bottom:16px;padding:16px 20px">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+        <div>
+          <label class="form-label" style="font-size:0.78rem;margin-bottom:4px;display:block">Fecha inicio</label>
+          <input id="cxc-date-from" type="date" class="form-control" value="${firstOfMonth}" style="width:150px">
+        </div>
+        <div>
+          <label class="form-label" style="font-size:0.78rem;margin-bottom:4px;display:block">Fecha fin</label>
+          <input id="cxc-date-to" type="date" class="form-control" value="${lastOfMonth}" style="width:150px">
+        </div>
+        <div style="flex:1;min-width:200px">
+          <label class="form-label" style="font-size:0.78rem;margin-bottom:4px;display:block">Cliente / Inquilino</label>
+          <select id="cxc-tenant" class="form-control">${tenantsOptions}</select>
+        </div>
+        <div>
+          <label class="form-label" style="font-size:0.78rem;margin-bottom:4px;display:block">Estado</label>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:6px 0">
+            <label class="cxc-check"><input type="checkbox" id="cxc-s-all" onchange="cxcToggleAll(this)" checked> <span class="badge badge-neutral">Todos</span></label>
+            <label class="cxc-check"><input type="checkbox" class="cxc-status" value="PENDING" checked> <span class="badge badge-warning">Pendientes</span></label>
+            <label class="cxc-check"><input type="checkbox" class="cxc-status" value="PARTIAL" checked> <span class="badge" style="background:var(--c-info,#3b82f6);color:#fff">Abonados</span></label>
+            <label class="cxc-check"><input type="checkbox" class="cxc-status" value="FINANCED"> <span class="badge badge-neutral">Financiados</span></label>
+            <label class="cxc-check"><input type="checkbox" class="cxc-status" value="PAID"> <span class="badge badge-success">Cobrados</span></label>
+            <label class="cxc-check"><input type="checkbox" class="cxc-status" value="LATE" checked> <span class="badge badge-danger">En mora</span></label>
+            <label class="cxc-check"><input type="checkbox" class="cxc-status" value="WAIVED"> <span class="badge badge-neutral">Anulados</span></label>
+          </div>
+        </div>
+        <div>
+          <button class="btn btn-primary" onclick="loadCxcReport()">🔍 Buscar</button>
+        </div>
+      </div>
+    </div>
+    <div id="cxc-results">
+      <div class="empty-state"><div class="spinner"></div><p style="margin-top:12px">Cargando...</p></div>
+    </div>
+    <style>
+      .cxc-check { display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none; }
+      .cxc-check input { cursor:pointer; }
+    </style>`;
+}
+
+function cxcToggleAll(checkbox) {
+  const checked = checkbox.checked;
+  document.querySelectorAll('.cxc-status').forEach(cb => { cb.checked = checked; });
+}
+
+async function loadCxcReport() {
+  const dateFrom  = document.getElementById('cxc-date-from')?.value || '';
+  const dateTo    = document.getElementById('cxc-date-to')?.value   || '';
+  const tenantId  = document.getElementById('cxc-tenant')?.value    || '';
+  const checked   = [...document.querySelectorAll('.cxc-status:checked')].map(cb => cb.value);
+  const allBtn    = document.getElementById('cxc-s-all');
+
+  const el = document.getElementById('cxc-results');
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state"><div class="spinner"></div></div>';
+
+  let url = '/payments/cxc-report?';
+  if (dateFrom)  url += `dateFrom=${dateFrom}&`;
+  if (dateTo)    url += `dateTo=${dateTo}&`;
+  if (tenantId)  url += `tenantId=${tenantId}&`;
+  if (checked.length === 0 || (allBtn && allBtn.checked)) {
+    url += `statuses=ALL`;
+  } else {
+    url += checked.map(s => `statuses=${s}`).join('&');
+  }
+
+  const res = await apiFetch(url);
+  // Store last data globally for export/print
+  window._cxcLastData = res?.data;
+  el.innerHTML = renderCxcResults(res?.data);
+}
+
+function renderCxcResults(data) {
+  if (!data) return '<div class="empty-state"><p>Error al cargar el reporte.</p></div>';
+  const { summary, tenantGroups = [], bchRate = 0 } = data;
+
+  const STATUS_ES = { PENDING:'Pendiente', PARTIAL:'Abonado', PAID:'Cobrado', LATE:'En mora', WAIVED:'Anulado', FINANCED:'Financiado' };
+  const STATUS_BADGE = {
+    PENDING:'badge-warning', PARTIAL:'badge-info', PAID:'badge-success',
+    LATE:'badge-danger', WAIVED:'badge-neutral', FINANCED:'badge-neutral',
+  };
+
+  const statusBadge = s => `<span class="badge ${STATUS_BADGE[s]||'badge-neutral'}">${STATUS_ES[s]||s}</span>`;
+
+  const fmtL = n => `L ${parseFloat(n||0).toLocaleString('es-HN',{minimumFractionDigits:2})}`;
+  const fmtD = n => `$ ${parseFloat(n||0).toLocaleString('es-HN',{minimumFractionDigits:2})}`;
+  const fmtMon = (amount, currency) => currency === 'USD' ? fmtD(amount) : fmtL(amount);
+
+  // Check localStorage for low-rate warning
+  let lowRateWarn = null;
+  try { lowRateWarn = JSON.parse(localStorage.getItem('cxc_low_rate_warning') || 'null'); } catch(e) {}
+
+  const warnBanner = lowRateWarn
+    ? `<div class="alert" style="background:#fff7ed;border:1px solid #f97316;color:#9a3412;margin-bottom:12px;display:flex;align-items:center;gap:8px">
+        ⚠️ <strong>Advertencia:</strong> El reporte usa una tasa de cambio <strong>inferior al BCH</strong>.
+        Tasa utilizada: <strong>L ${parseFloat(lowRateWarn.rate).toFixed(4)}</strong> &nbsp;|&nbsp;
+        Tasa BCH referencia: <strong>L ${parseFloat(lowRateWarn.bchRate).toFixed(4)}</strong>
+        <button style="margin-left:auto;background:none;border:none;cursor:pointer;color:#9a3412;font-size:1.1rem" onclick="try{localStorage.removeItem('cxc_low_rate_warning')}catch(e){}this.parentElement.remove()">✕</button>
+      </div>`
+    : '';
+
+  // Per-payment debit notes calc helper
+  const getDebitNotes = (p) => (p.contract?.debitNotes||[]).filter(
+    dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+  );
+  const debitTotal = (p) => {
+    const dns = getDebitNotes(p);
+    return dns.reduce((s, dn) => {
+      const amt = parseFloat(dn.amount||0);
+      return s + (dn.currency === 'HNL' ? amt : amt * bchRate);
+    }, 0);
+  };
+  const paymentBalance = (p) => {
+    const due  = parseFloat(p.amountDue||0);
+    const paid = parseFloat(p.amountPaid||0);
+    return Math.max(0, due - paid);
+  };
+  const balanceHNL = (p) => {
+    const bal = paymentBalance(p);
+    return (p.paymentCurrency === 'HNL' ? bal : bal * bchRate) + debitTotal(p);
+  };
+
+  // Build rows grouped by tenant
+  let groupedRows = '';
+  let grandTotal = 0;
+
+  for (const group of tenantGroups) {
+    let clientTotal = 0;
+    let clientRows  = '';
+
+    for (const p of group.payments) {
+      const unit   = p.contract?.unit;
+      const prop   = unit?.property;
+      const bal    = paymentBalance(p);
+      const dns    = getDebitNotes(p);
+      const dnTotal = debitTotal(p);
+      // contractCurrency: moneda del contrato (USD/HNL) — define cómo se muestra amountDue y saldo
+      // paymentCurrency:  moneda en que se hizo el pago — solo se usa para mostrar lo abonado
+      const contractCurrency = p.contract?.currency || p.paymentCurrency;
+      const isUSD = contractCurrency === 'USD';
+
+      const totalHNL = (isUSD ? bal * bchRate : bal) + dnTotal;
+      const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
+
+      if (isPending) clientTotal += totalHNL;
+
+      const debitCell = dns.length > 0
+        ? `<span title="${dns.map(dn=>`${dn.serviceType}: ${fmtMon(dn.amount,dn.currency)}`).join(', ')}" style="cursor:help;border-bottom:1px dashed #888">${fmtL(dnTotal)} (${dns.length})</span>`
+        : '—';
+
+      // T/C solo si el contrato es en USD
+      const rateCell = isUSD
+        ? `<span class="td-mono" style="font-size:0.78rem">L ${bchRate.toFixed(4)}</span>`
+        : `<span class="text-muted" style="font-size:0.78rem">—</span>`;
+
+      clientRows += `<tr>
+        <td class="text-muted" style="padding-left:28px">${prop?.name||'—'} — ${unit?.number||''}</td>
+        <td class="td-mono" style="font-size:0.82rem">${MONTHS_ES[p.periodMonth]||''} ${p.periodYear}</td>
+        <td class="td-mono ${p.status==='LATE'?'text-danger':''}" style="font-size:0.82rem">${formatDate(p.dueDate)}</td>
+        <td class="td-mono">${fmtMon(p.amountDue, contractCurrency)}</td>
+        <td class="td-mono" style="color:var(--c-success,#22c55e)">${parseFloat(p.amountPaid||0)>0?fmtMon(p.amountPaid,p.paymentCurrency):'—'}</td>
+        <td class="td-mono" style="font-weight:600;color:${bal>0?'var(--c-danger,#ef4444)':'var(--c-success,#22c55e)'}">${bal>0?fmtMon(bal,contractCurrency):'✓'}</td>
+        <td class="td-mono" style="color:#888">L 0.00</td>
+        <td class="td-mono" style="font-size:0.78rem">${debitCell}</td>
+        <td>${rateCell}</td>
+        <td class="td-mono" style="font-weight:600">${isPending ? fmtL(totalHNL) : '—'}</td>
+        <td>${statusBadge(p.status)}</td>
+      </tr>`;
+    }
+
+    grandTotal += clientTotal;
+
+    groupedRows += `
+      <tr style="background:var(--c-surface-alt,#f1f5f9)">
+        <td colspan="11" style="padding:7px 14px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="font-weight:700;font-size:0.88rem">👤 ${group.tenantName}
+              ${group.tenantPhone ? `<span class="text-muted td-mono" style="font-weight:400;font-size:0.78rem"> · ${group.tenantPhone}</span>` : ''}
+            </span>
+            <span style="font-weight:700;color:var(--c-primary)">Subtotal cliente: ${fmtL(clientTotal)}</span>
+          </div>
+        </td>
+      </tr>
+      ${clientRows}`;
+  }
+
+  // Grand total row
+  const totalRow = `<tr style="background:var(--c-primary,#1e3a5f);color:#fff">
+    <td colspan="9" style="padding:8px 14px;font-weight:700;font-size:0.9rem">TOTAL GLOBAL</td>
+    <td class="td-mono" style="padding:8px 14px;font-weight:700;font-size:0.95rem">${fmtL(grandTotal)}</td>
+    <td></td>
+  </tr>`;
+
+  return `
+    ${warnBanner}
+    <div class="stat-grid" style="margin-bottom:16px">
+      <div class="stat-card">
+        <div class="stat-icon blue"></div>
+        <div class="stat-value">${summary.total}</div>
+        <div class="stat-label">Total registros</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon gold"></div>
+        <div class="stat-value td-mono" style="font-size:0.95rem">${fmtL(summary.grandTotalHNL)}</div>
+        <div class="stat-label">Total Global HNL</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon gold"></div>
+        <div class="stat-value td-mono" style="font-size:0.95rem">${fmtL(summary.totalPendingHNL)}</div>
+        <div class="stat-label">Saldo Pendiente HNL</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon ${summary.totalLate>0?'red':'green'}"></div>
+        <div class="stat-value">${summary.totalLate}</div>
+        <div class="stat-label">En mora</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon green"></div>
+        <div class="stat-value">${summary.totalPaid}</div>
+        <div class="stat-label">Cobrados</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-icon blue"></div>
+        <div class="stat-value td-mono" style="font-size:0.82rem">L ${parseFloat(bchRate||0).toFixed(4)}</div>
+        <div class="stat-label">Tasa BCH Hoy</div>
+      </div>
+    </div>
+
+    <div class="card" style="padding:0">
+      <div style="padding:12px 20px;border-bottom:1px solid var(--c-border);display:flex;justify-content:space-between;align-items:center">
+        <strong style="font-size:0.88rem">Cuentas por Cobrar — Agrupado por Cliente</strong>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="exportCxcExcel()">📊 Exportar Excel</button>
+          <button class="btn btn-ghost btn-sm" onclick="printCxcReport()">🖨️ Imprimir</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table id="cxc-main-table">
+          <thead>
+            <tr>
+              <th>Propiedad / Unidad</th>
+              <th>Período</th>
+              <th>Vencimiento</th>
+              <th>Monto a Cobrar</th>
+              <th>Abonado</th>
+              <th>Saldo</th>
+              <th>Mora</th>
+              <th>Notas Débito</th>
+              <th>T/C</th>
+              <th>Total HNL</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${tenantGroups.length > 0
+              ? groupedRows + totalRow
+              : '<tr><td colspan="11" style="text-align:center;padding:24px;color:var(--c-text-muted)">Sin registros con los filtros seleccionados</td></tr>'
+            }
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+async function _cxcFetchCurrentData() {
+  // Use cached data from last search if available
+  const dateFrom = document.getElementById('cxc-date-from')?.value || '';
+  const dateTo   = document.getElementById('cxc-date-to')?.value   || '';
+  if (window._cxcLastData) return { data: window._cxcLastData, dateFrom, dateTo };
+
+  const tenantId = document.getElementById('cxc-tenant')?.value    || '';
+  const checked  = [...document.querySelectorAll('.cxc-status:checked')].map(cb => cb.value);
+  let url = '/payments/cxc-report?';
+  if (dateFrom)  url += `dateFrom=${dateFrom}&`;
+  if (dateTo)    url += `dateTo=${dateTo}&`;
+  if (tenantId)  url += `tenantId=${tenantId}&`;
+  url += checked.length === 0 ? 'statuses=ALL' : checked.map(s => `statuses=${s}`).join('&');
+  const res = await apiFetch(url);
+  return { data: res?.data, dateFrom, dateTo };
+}
+
+async function exportCxcExcel() {
+  const { data, dateFrom, dateTo } = await _cxcFetchCurrentData();
+  const payments = data?.payments || [];
+  const summary  = data?.summary  || {};
+
+  const STATUS_ES = { PENDING:'Pendiente', PARTIAL:'Abonado', PAID:'Cobrado', LATE:'En mora', WAIVED:'Anulado', FINANCED:'Financiado' };
+  const tenantGroups = data?.tenantGroups || [];
+  const bchRate = parseFloat(data?.bchRate || 0);
+
+  // ── Hoja de detalle agrupada por cliente ──────────────────────
+  const detailRows = [
+    ['Cliente','Teléfono','Propiedad','Unidad','Período','Vencimiento','Monto a Cobrar','Moneda','Abonado','Saldo','Mora','Notas Débito HNL','T/C (L/USD)','Total HNL','Estado'],
+  ];
+
+  for (const group of tenantGroups) {
+    let clientTotal = 0;
+    for (const p of group.payments) {
+      const unit   = p.contract?.unit;
+      const due    = parseFloat(p.amountDue||0);
+      const paid   = parseFloat(p.amountPaid||0);
+      const bal    = Math.max(0, due - paid);
+      const dns    = (p.contract?.debitNotes||[]).filter(dn=>dn.periodMonth===p.periodMonth&&dn.periodYear===p.periodYear);
+      const dnHNL  = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?bchRate:1),0);
+      const balHNL = (contractCurrency==='HNL' ? bal : bal * bchRate) + dnHNL;
+      const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
+      if (isPending) clientTotal += balHNL;
+
+      const contractCurrency = p.contract?.currency || p.paymentCurrency;
+      detailRows.push([
+        `${group.tenantName}`,
+        group.tenantPhone,
+        unit?.property?.name||'',
+        unit?.number||'',
+        `${MONTHS_ES[p.periodMonth]||''} ${p.periodYear}`,
+        p.dueDate ? new Date(p.dueDate).toLocaleDateString('es-HN') : '',
+        due,
+        contractCurrency,
+        paid,
+        bal,
+        0, // Mora siempre 0
+        dnHNL,
+        contractCurrency==='USD' ? bchRate : '',
+        isPending ? parseFloat(balHNL.toFixed(2)) : '',
+        STATUS_ES[p.status]||p.status,
+      ]);
+    }
+    // Subtotal por cliente
+    detailRows.push(['','','','','','','','','','','','','SUBTOTAL '+group.tenantName, parseFloat(clientTotal.toFixed(2)),'']);
+  }
+
+  // Gran total
+  detailRows.push(['','','','','','','','','','','','','TOTAL GLOBAL', parseFloat(parseFloat(summary.grandTotalHNL||0).toFixed(2)),'']);
+
+  // ── Hoja de resumen ───────────────────────────────────────────
+  const summaryRows = [
+    ['Concepto', 'Valor'],
+    ['Total registros',        summary.total        || 0],
+    ['Pendientes',             summary.totalPending  || 0],
+    ['Abonados',               summary.totalPartial  || 0],
+    ['Cobrados',               summary.totalPaid     || 0],
+    ['En mora',                summary.totalLate     || 0],
+    ['Anulados',               summary.totalWaived   || 0],
+    ['Saldo pendiente HNL',    parseFloat(summary.totalPendingHNL||0)],
+    ['Total Global HNL',       parseFloat(summary.grandTotalHNL||0)],
+    ['Tasa BCH utilizada',     bchRate],
+  ];
+
+  // ── Construir workbook con SheetJS ────────────────────────────
+  const XLSX = window.XLSX || (await import('https://cdn.sheetjs.com/xlsx-latest/package/xlsx.mjs'));
+
+  const wb = XLSX.utils.book_new();
+
+  // Hoja detalle
+  const wsDetail = XLSX.utils.aoa_to_sheet(detailRows);
+  // Ancho de columnas
+  wsDetail['!cols'] = [30,14,22,8,14,14,16,14,16,12,8,12].map(w => ({ wch: w }));
+  // Estilo de encabezado (SheetJS Community Edition no aplica estilos visuales, pero sí los registra)
+  XLSX.utils.book_append_sheet(wb, wsDetail, 'Detalle CxC');
+
+  // Hoja resumen
+  const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+  wsSummary['!cols'] = [{ wch: 28 }, { wch: 18 }];
+  XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumen');
+
+  const filename = `cuentas-por-cobrar-${dateFrom||'inicio'}-${dateTo||'fin'}.xlsx`;
+  XLSX.writeFile(wb, filename);
+}
+
+function printCxcReport() {
+  const data = window._cxcLastData;
+  if (!data) { toast('Primero realice una búsqueda.', 'warning'); return; }
+
+  const { tenantGroups = [], summary = {}, bchRate = 0 } = data;
+  const dateFrom  = document.getElementById('cxc-date-from')?.value || '';
+  const dateTo    = document.getElementById('cxc-date-to')?.value   || '';
+  const tenantSel = document.getElementById('cxc-tenant');
+  const tenantLbl = tenantSel?.options[tenantSel.selectedIndex]?.text || 'Todos';
+  const checked   = [...document.querySelectorAll('.cxc-status:checked')].map(cb => {
+    const M = {PENDING:'Pendiente',PARTIAL:'Abonado',PAID:'Cobrado',LATE:'En mora',WAIVED:'Anulado',FINANCED:'Financiado'};
+    return M[cb.value]||cb.value;
+  });
+
+  const fmtL = n => `L ${parseFloat(n||0).toLocaleString('es-HN',{minimumFractionDigits:2})}`;
+  const fmtMon = (amount, currency) => currency === 'USD'
+    ? `$ ${parseFloat(amount||0).toLocaleString('es-HN',{minimumFractionDigits:2})}`
+    : fmtL(amount);
+  // contractCurr: usa la moneda del contrato para mostrar amountDue y saldo correctamente
+  const contractCurr = p => p.contract?.currency || p.paymentCurrency;
+  const fmtDate = d => d ? new Date(d).toLocaleDateString('es-HN') : '—';
+  const STATUS_ES = {PENDING:'Pendiente',PARTIAL:'Abonado',PAID:'Cobrado',LATE:'En mora',WAIVED:'Anulado',FINANCED:'Financiado'};
+  const now = new Date().toLocaleString('es-HN');
+
+  let lowRateWarn = null;
+  try { lowRateWarn = JSON.parse(localStorage.getItem('cxc_low_rate_warning')||'null'); } catch(e){}
+
+  // Build table rows
+  let tableBody = '';
+  let grandTotal = 0;
+
+  for (const group of tenantGroups) {
+    let clientTotal = 0;
+    tableBody += `<tr class="group-header"><td colspan="10">👤 ${group.tenantName}${group.tenantPhone?' · '+group.tenantPhone:''}</td></tr>`;
+
+    for (const p of group.payments) {
+      const unit = p.contract?.unit;
+      const due  = parseFloat(p.amountDue||0);
+      const paid = parseFloat(p.amountPaid||0);
+      const bal  = Math.max(0, due - paid);
+      const dns  = (p.contract?.debitNotes||[]).filter(dn=>dn.periodMonth===p.periodMonth&&dn.periodYear===p.periodYear);
+      const dnHNL = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?bchRate:1),0);
+      const balHNL = (contractCurr(p)==='HNL' ? bal : bal * bchRate) + dnHNL;
+      const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
+      if (isPending) clientTotal += balHNL;
+
+      const BADGE_CLASS = {PENDING:'badge-warning',PARTIAL:'badge-info',PAID:'badge-success',LATE:'badge-danger',WAIVED:'badge-neutral',FINANCED:'badge-neutral'};
+      tableBody += `<tr>
+        <td>${unit?.property?.name||'—'} — ${unit?.number||''}</td>
+        <td>${(window.MONTHS_ES||[])[p.periodMonth]||''} ${p.periodYear}</td>
+        <td class="${p.status==='LATE'?'danger':''}">${fmtDate(p.dueDate)}</td>
+        <td>${fmtMon(p.amountDue,contractCurr(p))}</td>
+        <td>${paid>0?fmtMon(p.amountPaid,p.paymentCurrency):'—'}</td>
+        <td class="${bal>0?'danger':'success'}">${bal>0?fmtMon(bal,contractCurr(p)):'✓'}</td>
+        <td>L 0.00</td>
+        <td>${dns.length>0?fmtL(dnHNL)+` (${dns.length})`:'—'}</td>
+        <td>${contractCurr(p)==='USD'?`L ${parseFloat(bchRate).toFixed(4)}`:'—'}</td>
+        <td class="bold">${isPending?fmtL(balHNL):'—'}</td>
+        <td><span class="badge ${BADGE_CLASS[p.status]||'badge-neutral'}">${STATUS_ES[p.status]||p.status}</span></td>
+      </tr>`;
+    }
+
+    grandTotal += clientTotal;
+    tableBody += `<tr class="subtotal-row"><td colspan="9">Subtotal — ${group.tenantName}</td><td colspan="2" class="bold">${fmtL(clientTotal)}</td></tr>`;
+  }
+
+  tableBody += `<tr class="grand-total-row"><td colspan="9">TOTAL GLOBAL</td><td colspan="2">${fmtL(grandTotal)}</td></tr>`;
+
+  const printWin = window.open('','_blank','width=1100,height=800');
+  printWin.document.write(`<!DOCTYPE html>
+<html lang="es"><head><meta charset="UTF-8">
+<title>Cuentas por Cobrar</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Arial,sans-serif;font-size:10.5px;color:#111;padding:18px 24px}
+  h1{font-size:15px;font-weight:700;margin-bottom:2px}
+  .subtitle{font-size:10px;color:#555;margin-bottom:10px}
+  .filters{font-size:9.5px;color:#444;background:#f5f5f5;border:1px solid #ddd;border-radius:4px;padding:5px 10px;margin-bottom:12px;display:flex;flex-wrap:wrap;gap:10px}
+  .filters strong{color:#111}
+  .warn-box{background:#fff7ed;border:1px solid #f97316;color:#9a3412;border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:9.5px}
+  .summary{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:12px}
+  .sc{border:1px solid #ddd;border-radius:4px;padding:5px 10px;min-width:120px}
+  .sc .val{font-size:13px;font-weight:700}.sc .lbl{font-size:8.5px;color:#666;text-transform:uppercase;letter-spacing:0.3px}
+  table{width:100%;border-collapse:collapse}
+  thead tr{background:#1e3a5f;color:#fff}
+  thead th{padding:5px 6px;font-size:9px;font-weight:600;white-space:nowrap;text-align:left}
+  tbody td{padding:3px 6px;border-bottom:1px solid #eee;font-size:9.5px;vertical-align:top}
+  tbody tr:nth-child(even){background:#f9f9f9}
+  tr.group-header td{background:#e8eef6;color:#1e3a5f;font-weight:700;padding:5px 10px;font-size:10px}
+  tr.subtotal-row td{background:#dbeafe;color:#1e40af;font-weight:700;text-align:right;padding:4px 8px}
+  tr.grand-total-row td{background:#1e3a5f;color:#fff;font-weight:700;font-size:11px;padding:6px 8px;text-align:right}
+  .bold{font-weight:700}.danger{color:#c0392b}.success{color:#27ae60}
+  .badge{display:inline-block;padding:1px 5px;border-radius:8px;font-size:8px;font-weight:600}
+  .badge-warning{background:#fef3c7;color:#92400e}.badge-info{background:#dbeafe;color:#1e40af}
+  .badge-success{background:#d1fae5;color:#065f46}.badge-danger{background:#fee2e2;color:#991b1b}
+  .badge-neutral{background:#f3f4f6;color:#374151}
+  .footer{margin-top:14px;font-size:8.5px;color:#888;text-align:right;border-top:1px solid #ddd;padding-top:5px}
+  @media print{body{padding:8px 12px}@page{margin:10mm 8mm;size:landscape}thead{display:table-header-group}tr{page-break-inside:avoid}}
+</style></head><body>
+  <h1>Reporte de Cuentas por Cobrar</h1>
+  <div class="subtitle">Generado el ${now}</div>
+  <div class="filters">
+    <span><strong>Período:</strong> ${dateFrom||'—'} al ${dateTo||'—'}</span>
+    <span><strong>Cliente:</strong> ${tenantLbl}</span>
+    <span><strong>Estados:</strong> ${checked.length?checked.join(', '):'Todos'}</span>
+    <span><strong>Tasa BCH:</strong> L ${parseFloat(bchRate).toFixed(4)}</span>
+  </div>
+  ${lowRateWarn?`<div class="warn-box">⚠️ <strong>Advertencia:</strong> Se usó una tasa inferior al BCH. Tasa usada: L ${parseFloat(lowRateWarn.rate).toFixed(4)} | Tasa BCH: L ${parseFloat(lowRateWarn.bchRate).toFixed(4)}</div>`:''}
+  <div class="summary">
+    <div class="sc"><div class="val">${summary.total||0}</div><div class="lbl">Total registros</div></div>
+    <div class="sc"><div class="val">${fmtL(summary.grandTotalHNL)}</div><div class="lbl">Total Global HNL</div></div>
+    <div class="sc"><div class="val">${fmtL(summary.totalPendingHNL)}</div><div class="lbl">Saldo Pendiente HNL</div></div>
+    <div class="sc"><div class="val">${summary.totalPending||0}</div><div class="lbl">Pendientes</div></div>
+    <div class="sc"><div class="val">${summary.totalLate||0}</div><div class="lbl">En mora</div></div>
+    <div class="sc"><div class="val">${summary.totalPaid||0}</div><div class="lbl">Cobrados</div></div>
+  </div>
+  <table>
+    <thead><tr>
+      <th>Propiedad/Unidad</th><th>Período</th><th>Vencimiento</th><th>Monto a Cobrar</th>
+      <th>Abonado</th><th>Saldo</th><th>Mora</th><th>Notas Débito</th><th>T/C</th><th>Total HNL</th><th>Estado</th>
+    </tr></thead>
+    <tbody>${tableBody}</tbody>
+  </table>
+  <div class="footer">Rentify · Cuentas por Cobrar · ${now}</div>
+</body></html>`);
+  printWin.document.close();
+  printWin.focus();
+  setTimeout(()=>printWin.print(), 400);
+}
 async function loadReport() {
   const month = parseInt(document.getElementById('report-month')?.value);
   const year  = parseInt(document.getElementById('report-year')?.value);
@@ -3014,6 +4770,10 @@ function renderApp() {
             <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><rect x="1" y="4" width="22" height="16" rx="2" ry="2"/><line x1="1" y1="10" x2="23" y2="10"/></svg>
             Pagos
           </button>
+          <button class="nav-item" data-page="debit-notes" onclick="navigate('debit-notes')">
+            <svg width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            Notas de Débito
+          </button>
         </div>
 
         <div class="sidebar-section">
@@ -3051,9 +4811,12 @@ function renderApp() {
         </div>
       </aside>
 
+      <!-- Fondo oscuro para cerrar el menú en móvil al tocar fuera -->
+      <div id="sidebar-backdrop" class="sidebar-backdrop" onclick="closeSidebar()"></div>
+
       <!-- Topbar -->
       <header class="topbar">
-        <button class="btn btn-ghost btn-icon" id="sidebar-toggle" onclick="document.getElementById('sidebar').classList.toggle('open')" style="display:none">
+        <button class="btn btn-ghost btn-icon" id="sidebar-toggle" onclick="toggleSidebar()" style="display:none">
           <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
         </button>
         <span class="topbar-title" id="topbar-title">Panel Principal</span>

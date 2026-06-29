@@ -57,6 +57,8 @@ model Company {
   properties          Property[]
   invoices            Invoice[]
   notificationConfig  NotificationConfig?
+  tenants             Tenant[]
+  contracts           Contract[]
 
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
@@ -151,6 +153,10 @@ model Tenant {
   isActive   Boolean    @default(true)
   telegramChatId  String? // Chat ID de Telegram del inquilino
   callMeBotApiKey String? // API Key personal de CallMeBot (WhatsApp)
+  textMeBotApiKey String? // API Key de TextMeBot (WhatsApp con adjuntos PDF)
+
+  companyId  String? // Empresa a la que pertenece este inquilino (null = empresa principal)
+  company    Company? @relation(fields: [companyId], references: [id])
   contracts  Contract[]
   createdAt  DateTime   @default(now())
   updatedAt  DateTime   @updatedAt
@@ -183,7 +189,11 @@ model Contract {
   renewalNoticeSentAt  DateTime?
   notes                String?
   contractFileUrl      String?
+
+  companyId            String? // Empresa a la que pertenece este contrato (null = empresa principal)
+  company              Company? @relation(fields: [companyId], references: [id])
   payments             Payment[]
+  debitNotes           DebitNote[]
   createdAt            DateTime       @default(now())
   updatedAt            DateTime       @updatedAt
 
@@ -227,11 +237,12 @@ model Payment {
 // TIPOS DE CAMBIO
 // ════════════════════════════════════════════
 model ExchangeRate {
-  id        String   @id @default(cuid())
-  date      DateTime @db.Date
-  rate      Decimal  @db.Decimal(10, 4)
-  source    String   @default("ExchangeRate-API")
-  createdAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  date       DateTime  @db.Date
+  rate       Decimal   @db.Decimal(10, 4) // Tasa de VENTA — la usada para todas las conversiones del sistema
+  rateCompra Decimal?  @db.Decimal(10, 4) // Tasa de compra, solo informativa
+  source     String    @default("ExchangeRate-API")
+  createdAt  DateTime  @default(now())
 
   @@unique([date])
   @@map("exchange_rates")
@@ -314,6 +325,7 @@ model NotificationConfig {
   receiptEnabled        Boolean  @default(true)   // Al registrar pago
   lateNoticeEnabled     Boolean  @default(true)   // Al entrar en mora
   renewalEnabled        Boolean  @default(true)   // 30 días antes del fin del contrato
+  debitNoteEnabled      Boolean  @default(true)   // Al crear nota de débito
 
   // ── Configuración de tiempos ─────────────────
   reminderDaysBefore    Int      @default(3)       // Cuántos días antes recordar
@@ -322,9 +334,15 @@ model NotificationConfig {
   sendMinute            Int      @default(0)
 
   // ── Números adicionales ───────────────────────
-  // Lista separada por comas de números que reciben TODAS las notificaciones
-  // Ej: "+50499887766,+50488776655"
+  // CallMeBot CC: cada número necesita su propia API key
+  // Formato: "+504XXXXXXXX:apikey" uno por coma
   ccNumbers             String?
+
+  // TextMeBot CC: UNA sola API key del remitente, varios destinatarios
+  // textMeBotSenderKey: tu API key de TextMeBot (suscripción)
+  // ccNumbersTextMeBot: números destinatarios separados por coma, sin apikey
+  textMeBotSenderKey    String?  // API Key de tu suscripción TextMeBot
+  ccNumbersTextMeBot    String?  // Ej: "+50499887766,+50488776655"
 
   // ── Plantillas personalizadas (JSON) ─────────
   reminderTemplate      String?  // Plantilla custom para recordatorios
@@ -372,3 +390,45 @@ model NotificationLog {
   @@map("notification_logs")
 }
 
+
+// ════════════════════════════════════════════
+// NOTAS DE DÉBITO
+// Cargos por servicios públicos por inquilino
+// Puede ingresarlas el contador (VIEWER)
+// ════════════════════════════════════════════
+enum DebitNoteStatus {
+  PENDING   // Pendiente de cobro
+  INCLUDED  // Incluida en un pago
+  CANCELLED // Anulada
+}
+
+model DebitNote {
+  id           String          @id @default(cuid())
+  contractId   String
+  contract     Contract        @relation(fields: [contractId], references: [id], onDelete: Restrict)
+
+  // Período al que aplica
+  periodMonth  Int
+  periodYear   Int
+
+  // Servicio
+  serviceType  String          // AGUA, LUZ, GAS, INTERNET, BASURA, OTRO
+  description  String          // Detalle, ej: "Factura SANAA #12345"
+  amount       Decimal         @db.Decimal(12, 2)
+  currency     Currency        @default(HNL)
+
+  // Referencia de la factura del servicio
+  invoiceRef   String?         // Número de factura del servicio público
+  invoiceDate  DateTime?       // Fecha de la factura
+
+  status       DebitNoteStatus @default(PENDING)
+  paymentId    String?         // Si ya fue cobrada, referencia al pago
+  cancelReason String?
+  notes        String?
+  createdById  String?         // Usuario que la registró
+
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@map("debit_notes")
+}
