@@ -813,4 +813,46 @@ export const paymentsController = {
       res.json(successResponse(updated, 'Pago actualizado correctamente.'));
     } catch (err) { next(err); }
   },
+
+  /**
+   * GET /api/payments/proof/:filename — sirve temporalmente un comprobante
+   * o reporte PDF para que TextMeBot pueda descargarlo y adjuntarlo al
+   * mensaje de WhatsApp. SIN autenticación (TextMeBot es un servicio
+   * externo que no tiene el JWT del sistema) — por eso se monta antes
+   * del middleware `authenticate` en payments.routes.ts.
+   *
+   * El archivo vive en el directorio temporal del sistema (os.tmpdir())
+   * y se borra automáticamente 5 minutos después de generarse (ver los
+   * bloques de envío de comprobante más arriba en este mismo archivo,
+   * y sendCuentasPorCobrarReport en notification.job.ts).
+   */
+  async serveProof(req: { params: { filename: string } }, res: Response): Promise<void> {
+    const { filename } = req.params;
+
+    // Seguridad: solo permitir nombres de archivo generados por el propio
+    // sistema (prefijo "proof-"), sin separadores de ruta — evita acceso
+    // a archivos arbitrarios del servidor.
+    if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\') || !filename.startsWith('proof-')) {
+      res.status(400).send('Nombre de archivo inválido.');
+      return;
+    }
+
+    const filePath = path.join(os.tmpdir(), filename);
+    if (!fs.existsSync(filePath)) {
+      res.status(404).send('El comprobante ya no está disponible (puede haber expirado).');
+      return;
+    }
+
+    const ext = path.extname(filename).toLowerCase();
+    const mimeByExt: Record<string, string> = {
+      '.pdf': 'application/pdf',
+      '.jpg': 'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.png': 'image/png',
+      '.webp': 'image/webp',
+    };
+    res.setHeader('Content-Type', mimeByExt[ext] || 'application/octet-stream');
+    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
+    fs.createReadStream(filePath).pipe(res);
+  },
 };

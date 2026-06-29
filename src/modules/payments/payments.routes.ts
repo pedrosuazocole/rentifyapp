@@ -6,6 +6,14 @@ import { authenticate, authorize } from '../../middlewares/auth.middleware';
 import { validate } from '../../middlewares/validate.middleware';
 
 const router = Router();
+
+// IMPORTANTE: esta ruta va ANTES de `router.use(authenticate)` porque
+// TextMeBot (servicio externo) necesita descargar el archivo sin JWT.
+// El nombre de archivo está validado dentro del controlador (prefijo
+// "proof-" obligatorio, sin separadores de ruta) para evitar acceso
+// a archivos arbitrarios del servidor.
+router.get('/proof/:filename', paymentsController.serveProof);
+
 router.use(authenticate);
 
 router.get('/', paymentsController.list);
