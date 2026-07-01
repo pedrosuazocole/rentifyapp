@@ -2989,7 +2989,7 @@ async function renderExchangeRates() {
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </div>
         <div class="stat-value">L ${parseFloat(todayRate || 0).toFixed(4)}</div>
-        <div class="stat-label">Tasa de VENTA de hoy (Ficohsa / BCH)</div>
+        <div class="stat-label">Tasa USD/HNL de hoy (mercado)</div>
       </div>
       <div class="stat-card" style="cursor:pointer" onclick="openModal('modal-manual-rate')">
         <div class="stat-icon blue">
