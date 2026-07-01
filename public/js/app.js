@@ -2978,7 +2978,7 @@ async function renderExchangeRates() {
         </button>
         <button class="btn btn-primary" onclick="forceRateUpdate()">
           <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-          Actualizar desde Ficohsa
+          Actualizar tasa de cambio
         </button>
       </div>
     </div>
@@ -2989,7 +2989,7 @@ async function renderExchangeRates() {
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         </div>
         <div class="stat-value">L ${parseFloat(todayRate || 0).toFixed(4)}</div>
-        <div class="stat-label">Tasa de VENTA de hoy (Ficohsa)</div>
+        <div class="stat-label">Tasa de VENTA de hoy (Ficohsa / BCH)</div>
       </div>
       <div class="stat-card" style="cursor:pointer" onclick="openModal('modal-manual-rate')">
         <div class="stat-icon blue">
@@ -3168,7 +3168,7 @@ async function loadBchRates() {
 
 async function forceRateUpdate() {
   await apiFetch('/exchange-rates/fetch', { method: 'POST' });
-  toast('Tasa de venta actualizada desde Ficohsa.');
+  toast('Tasa de cambio actualizada.');
   renderExchangeRates();
 }
 
