@@ -140,9 +140,9 @@ async function sendToCCNumbers(message: string, config: typeof DEFAULT_CONFIG): 
 }
 
 export function registerJobs(): void {
-  // ── Actualizar tipo de cambio (tasa de VENTA, Banpaís) — 7:00 AM diario ──
+  // ── Actualizar tipo de cambio (tasa de VENTA, Ficohsa) — 7:00 AM diario ──
   cron.schedule('0 7 * * *', async () => {
-    console.log('💱 [CRON] Actualizando tipo de cambio desde Banpaís...');
+    console.log('💱 [CRON] Actualizando tipo de cambio desde Ficohsa...');
     try {
       const { ExchangeRateService } = await import('../services/exchange-rate.service');
       await ExchangeRateService.fetchAndSave();
