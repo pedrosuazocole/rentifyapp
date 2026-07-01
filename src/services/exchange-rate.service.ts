@@ -1,54 +1,49 @@
 // src/services/exchange-rate.service.ts
-// Obtiene la tasa de cambio diaria HNL/USD (tasa de VENTA) desde la
-// página pública de Ficohsa: https://www.ficohsa.hn/tasas-de-cambio
 //
-// Ficohsa publica "Dólar / Compra: L XX.XXXX / Venta: L XX.XXXX"
-// como texto plano en HTML estático renderizado en el servidor — sin
-// login, sin JavaScript, sin Puppeteer. Un simple axios.get() lo lee.
+// FUENTE: API interna de Ficohsa que alimenta el widget "Cambio del día"
+// de su página principal. Devuelve JSON con compra/venta del dólar.
 //
-// Motivo del cambio vs Banpaís: Banpaís carga los valores del dólar
-// con JavaScript (widget dinámico), por lo que axios no lo puede leer.
-// Ficohsa sí lo renderiza en el HTML estático.
+// FALLBACK: API del Banco Central de Honduras (bch.hn/api/tipocambio).
+//
+// Si ambas fallan: usa la última tasa guardada en la BD, o pide
+// ingreso manual desde Configuración → Tipo de Cambio.
 import axios from 'axios';
 import { prisma } from '../config/database';
 
-const FICOHSA_URL = 'https://www.ficohsa.hn/tasas-de-cambio';
+// Endpoint interno de Ficohsa que alimenta el widget de tasa de cambio.
+// Descubierto inspeccionando las peticiones XHR del navegador en ficohsa.hn
+const FICOHSA_API_URL = 'https://www.ficohsa.hn/api/exchangeRate/getExchangeRate';
 
-// Estructura real del HTML de Ficohsa (confirmada):
-//   "Dólar $  Compra  L 26.4600  Venta  L 26.5923"
-// El regex trabaja sobre texto plano (sin tags HTML).
-const PRECIO_DOLAR_REGEX =
-  /D[oó]lar[\s\S]{0,80}?Compra\s+L\s*([\d.,]+)\s+Venta\s+L\s*([\d.,]+)/i;
+// Fallback: API del BCH (requiere fechas en formato YYYY-MM-DD)
+const BCH_API_URL = 'https://www.bch.hn/api/tipocambio';
 
-function stripHtmlTags(html: string): string {
-  return html.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ');
+const AXIOS_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36',
+  'Accept': 'application/json, text/html, */*',
+};
+
+function parseRate(v: unknown): number {
+  if (typeof v === 'number') return v;
+  if (typeof v === 'string') return parseFloat(v.replace(',', '.'));
+  return NaN;
 }
 
-function parseNumber(raw: string): number {
-  const cleaned = raw.trim().replace(/\s/g, '');
-  if (cleaned.includes(',') && cleaned.includes('.')) {
-    return parseFloat(cleaned.replace(/,/g, ''));
-  }
-  if (cleaned.includes(',')) {
-    return parseFloat(cleaned.replace(',', '.'));
-  }
-  return parseFloat(cleaned);
+function validarTasa(n: number): boolean {
+  return !isNaN(n) && n >= 15 && n <= 50;
 }
 
 export class ExchangeRateService {
   /**
-   * Obtiene la tasa de VENTA de hoy desde la BD.
-   * Si no existe, o si el registro viene de una fuente vieja
-   * (ej. "ExchangeRate-API", "Banpaís"), lo vuelve a descargar
-   * de Ficohsa y sobreescribe — evita quedarse pegado con un
-   * valor residual de una fuente anterior.
+   * Obtiene la tasa de VENTA de hoy.
+   * Si el registro de hoy viene de una fuente vieja (ej. "ExchangeRate-API",
+   * "Banpaís") lo sobreescribe para corregir valores residuales.
    */
   static async getTodayRate(): Promise<number> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
     const existing = await prisma.exchangeRate.findUnique({ where: { date: today } });
-    const fuentesValidas = ['Ficohsa', 'Manual'];
+    const fuentesValidas = ['Ficohsa', 'BCH', 'Manual'];
     if (existing && fuentesValidas.includes(existing.source)) {
       return parseFloat(existing.rate.toString());
     }
@@ -57,86 +52,123 @@ export class ExchangeRateService {
   }
 
   /**
-   * Descarga la tasa de VENTA desde Ficohsa y la guarda en el
-   * historial diario (upsert — actualiza si ya existe).
-   * Llamado desde el cron job (7am) y como fallback en getTodayRate.
+   * Descarga la tasa de VENTA e intenta múltiples fuentes en cascada.
+   * Guarda el resultado en el historial diario (upsert).
    */
   static async fetchAndSave(): Promise<number> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // ── Intento 1: API interna de Ficohsa ──────────────────────────
     try {
-      const { compra, venta } = await this.scrapeFicohsa();
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
+      const { compra, venta } = await this.fetchFicohsaAPI();
       await prisma.exchangeRate.upsert({
         where: { date: today },
         update: { rate: venta, rateCompra: compra, source: 'Ficohsa' },
         create: { date: today, rate: venta, rateCompra: compra, source: 'Ficohsa' },
       });
-
-      console.log(`💱 Tasa de venta Ficohsa actualizada: L ${venta} por USD (compra: L ${compra})`);
+      console.log(`💱 Tasa Ficohsa → Venta: L ${venta} | Compra: L ${compra}`);
       return venta;
-    } catch (err) {
-      console.error('⚠️ Error al obtener tipo de cambio de Ficohsa:', err instanceof Error ? err.message : err);
-
-      // Fallback: usar la última tasa guardada en la BD
-      const latest = await prisma.exchangeRate.findFirst({ orderBy: { date: 'desc' } });
-      if (latest) {
-        console.log(`💱 Usando última tasa conocida: L ${latest.rate}`);
-        return parseFloat(latest.rate.toString());
-      }
-      throw new Error(
-        'No se pudo obtener el tipo de cambio de Ficohsa y no hay tasa previa registrada. ' +
-        'Ingresála manualmente desde Configuración → Tipo de Cambio.'
-      );
+    } catch (e1) {
+      console.warn('⚠️ Ficohsa API falló:', (e1 as Error).message);
     }
+
+    // ── Intento 2: API del Banco Central de Honduras ────────────────
+    try {
+      const { compra, venta } = await this.fetchBCH(today);
+      await prisma.exchangeRate.upsert({
+        where: { date: today },
+        update: { rate: venta, rateCompra: compra, source: 'BCH' },
+        create: { date: today, rate: venta, rateCompra: compra, source: 'BCH' },
+      });
+      console.log(`💱 Tasa BCH → Venta: L ${venta} | Compra: L ${compra}`);
+      return venta;
+    } catch (e2) {
+      console.warn('⚠️ BCH API falló:', (e2 as Error).message);
+    }
+
+    // ── Fallback: última tasa guardada en la BD ─────────────────────
+    const latest = await prisma.exchangeRate.findFirst({ orderBy: { date: 'desc' } });
+    if (latest) {
+      console.log(`💱 Usando última tasa conocida: L ${latest.rate} (${latest.source}, ${latest.date.toLocaleDateString('es-HN')})`);
+      return parseFloat(latest.rate.toString());
+    }
+
+    throw new Error(
+      'No se pudo obtener el tipo de cambio de ninguna fuente y no hay tasa previa registrada. ' +
+      'Ingresála manualmente desde Configuración → Tipo de Cambio.'
+    );
   }
 
   /**
-   * Descarga y parsea el HTML público de Ficohsa.
-   * Lanza un error descriptivo si la página cambia de estructura.
+   * API interna de Ficohsa que alimenta el widget "Cambio del día".
+   * Devuelve la tasa oficial del día basada en el BCH.
    */
-  private static async scrapeFicohsa(): Promise<{ compra: number; venta: number }> {
-    const { data: html } = await axios.get<string>(FICOHSA_URL, {
-      timeout: 15000,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
+  private static async fetchFicohsaAPI(): Promise<{ compra: number; venta: number }> {
+    const { data } = await axios.get(FICOHSA_API_URL, {
+      timeout: 10000,
+      headers: AXIOS_HEADERS,
     });
 
-    const texto = stripHtmlTags(html);
-    const match = texto.match(PRECIO_DOLAR_REGEX);
+    // La respuesta puede ser un array o un objeto — probamos ambos formatos
+    const record = Array.isArray(data) ? data[0] : data;
+    if (!record) throw new Error('Respuesta vacía de Ficohsa API');
 
-    if (!match) {
-      throw new Error(
-        'No se encontró el bloque "Dólar / Compra / Venta" en la página de Ficohsa. ' +
-        'La estructura de la página puede haber cambiado.'
-      );
-    }
+    // Intentar distintos nombres de campo posibles
+    const compra = parseRate(
+      record.compra ?? record.purchasePrice ?? record.buyRate ??
+      record.buy ?? record.precioCompra ?? record.purchase
+    );
+    const venta = parseRate(
+      record.venta ?? record.salePrice ?? record.sellRate ??
+      record.sell ?? record.precioVenta ?? record.sale
+    );
 
-    const compra = parseNumber(match[1]);
-    const venta  = parseNumber(match[2]);
-
-    if (!compra || !venta || compra <= 0 || venta <= 0) {
-      throw new Error(`Valores inválidos extraídos de Ficohsa (compra="${match[1]}", venta="${match[2]}")`);
+    if (!validarTasa(compra) || !validarTasa(venta)) {
+      throw new Error(`Valores inválidos de Ficohsa API: compra=${compra}, venta=${venta}. Respuesta: ${JSON.stringify(data).slice(0, 200)}`);
     }
-    if (venta < compra) {
-      throw new Error(`Tasa inconsistente: venta (${venta}) menor que compra (${compra})`);
-    }
-    if (venta < 15 || venta > 50) {
-      throw new Error(`Tasa de venta fuera del rango esperado para Lempiras: ${venta}`);
-    }
+    if (venta < compra) throw new Error(`Tasa inconsistente: venta (${venta}) < compra (${compra})`);
 
     return { compra, venta };
   }
 
   /**
-   * Obtiene la tasa de VENTA de una fecha específica.
-   * Si no existe esa fecha exacta (ej. fin de semana, feriado),
-   * usa la más cercana anterior disponible en el historial.
-   * Garantiza que facturas y pagos queden con la tasa del día
-   * en que se emitieron, no la tasa de hoy.
+   * API del Banco Central de Honduras.
+   * URL: https://www.bch.hn/api/tipocambio?fechainicio=YYYY-MM-DD&fechafin=YYYY-MM-DD
+   */
+  private static async fetchBCH(date: Date): Promise<{ compra: number; venta: number }> {
+    const dateStr = date.toISOString().split('T')[0];
+    const url = `${BCH_API_URL}?fechainicio=${dateStr}&fechafin=${dateStr}`;
+
+    const { data } = await axios.get(url, {
+      timeout: 10000,
+      headers: AXIOS_HEADERS,
+    });
+
+    const record = Array.isArray(data) ? data[0] : data;
+    if (!record) throw new Error('Respuesta vacía de BCH API');
+
+    // El BCH puede usar distintos nombres de campo según la versión de su API
+    const compra = parseRate(
+      record.compra ?? record.precioCompra ?? record.buy ??
+      record.tipoCambioCompra ?? record.tasaCompra
+    );
+    const venta = parseRate(
+      record.venta ?? record.precioVenta ?? record.sell ??
+      record.tipoCambioVenta ?? record.tasaVenta
+    );
+
+    if (!validarTasa(compra) || !validarTasa(venta)) {
+      throw new Error(`Valores inválidos del BCH: compra=${compra}, venta=${venta}. Respuesta: ${JSON.stringify(data).slice(0, 200)}`);
+    }
+    if (venta < compra) throw new Error(`Tasa inconsistente BCH: venta (${venta}) < compra (${compra})`);
+
+    return { compra, venta };
+  }
+
+  /**
+   * Tasa de VENTA para una fecha específica — fija la tasa al día
+   * en que se emitió la factura o se registró el pago.
    */
   static async getRateForDate(date: Date): Promise<number> {
     const d = new Date(date);
@@ -148,8 +180,6 @@ export class ExchangeRateService {
     });
 
     if (rate) return parseFloat(rate.rate.toString());
-
-    // No hay ningún registro previo — primer arranque del sistema
     return await this.fetchAndSave();
   }
 
