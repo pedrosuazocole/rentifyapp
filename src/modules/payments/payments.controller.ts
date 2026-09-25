@@ -105,17 +105,7 @@ export const paymentsController = {
   async register(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
     try {
       const { amountPaid, paymentCurrency, paymentDate, notes,
-              proofBase64, proofMime, proofName, proofs } = req.body;
-      // Normalizamos a un arreglo de comprobantes (máx. 5), aceptando también
-      // el formato anterior de un solo archivo para no romper integraciones viejas.
-      const MAX_PROOFS = 5;
-      let proofList: Array<{ proofBase64: string; proofMime: string; proofName: string }> =
-        Array.isArray(proofs) ? proofs.filter((p: any) => p?.proofBase64 && p?.proofMime && p?.proofName) : [];
-      if (!proofList.length && proofBase64 && proofMime && proofName) {
-        proofList = [{ proofBase64, proofMime, proofName }];
-      }
-      if (proofList.length > MAX_PROOFS) proofList = proofList.slice(0, MAX_PROOFS);
-      const hasProofs = proofList.length > 0;
+              proofBase64, proofMime, proofName } = req.body;
       const paidDate = paymentDate ? new Date(paymentDate) : new Date();
 
       // 1. Cargar el pago con su contrato e inquilino
@@ -153,10 +143,7 @@ export const paymentsController = {
       let amountInContractCurrency: number | undefined;
 
       if (paymentCurrency !== contract.currency) {
-        // Usamos la tasa de VENTA vigente en la fecha del pago (no la de hoy),
-        // para que la conversión quede fijada con la tasa correspondiente
-        // al día en que se emite/registra el pago.
-        exchangeRateUsed = await ExchangeRateService.getRateForDate(paidDate);
+        exchangeRateUsed = await ExchangeRateService.getTodayRate();
         if (paymentCurrency === 'HNL' && contract.currency === 'USD') {
           amountInContractCurrency = parseFloat(
             convertHNLtoUSD(amountPaid, exchangeRateUsed)
@@ -263,7 +250,7 @@ export const paymentsController = {
 
           // CC — solo si NO hay comprobante adjunto (si lo hay, el bloque de
           // comprobante más abajo ya le avisa a los CC junto con el archivo)
-          if (!hasProofs && notifConfigBasic?.textMeBotSenderKey?.trim() && notifConfigBasic?.ccNumbersTextMeBot) {
+          if (!proofBase64 && notifConfigBasic?.textMeBotSenderKey?.trim() && notifConfigBasic?.ccNumbersTextMeBot) {
             const msgCCBasic =
               `✅ *Rentify — Pago Registrado*\n\n` +
               `👤 *${tenant.firstName} ${tenant.lastName}*\n` +
@@ -285,9 +272,17 @@ export const paymentsController = {
         }
       }
 
-      // ── Enviar comprobante(s) adjunto(s) via TextMeBot (inquilino + CC) ──
-      if (hasProofs) {
+      // ── Enviar comprobante adjunto via TextMeBot (inquilino + CC) ──
+      if (proofBase64 && proofMime && proofName) {
         try {
+          const ext        = (proofName as string).includes('.') ? (proofName as string).split('.').pop() : 'jpg';
+          const tmpName    = `proof-${updated.id}-${Date.now()}.${ext}`;
+          const tmpPath    = path.join(os.tmpdir(), tmpName);
+          const fileDisp   = (proofName as string) || 'comprobante';
+          fs.writeFileSync(tmpPath, Buffer.from(proofBase64 as string, 'base64'));
+
+          // URL pública temporal que TextMeBot descarga para adjuntar
+          const proofUrl     = `${env.APP_URL}/api/payments/proof/${tmpName}`;
           const tenant       = updated.contract.tenant;
           const unit         = updated.contract.unit;
           const tenantName   = `${tenant.firstName} ${tenant.lastName}`;
@@ -295,76 +290,54 @@ export const paymentsController = {
           const monto        = formatMoney(toNumber(updated.amountPaid), updated.paymentCurrency as Currency);
           const fecha        = paidDate.toLocaleDateString('es-HN');
           const recibo       = updated.receiptNumber;
-          const totalProofs  = proofList.length;
+
+          // Mensaje para el inquilino
+          const msgInquilino =
+            `✅ *Rentify App — Comprobante de Pago*\n\n` +
+            `Hola *${tenantName}*, tu pago fue registrado.\n\n` +
+            `📍 Unidad: ${propertyUnit}\n` +
+            `💰 Monto: *${monto}*\n` +
+            `📅 Fecha: ${fecha}\n` +
+            `🧾 Recibo N°: ${recibo}\n\n` +
+            `📎 Tu comprobante se adjunta a este mensaje.`;
+
+          // Mensaje para CC
+          const msgCC =
+            `📎 *Rentify — Comprobante de Pago*\n\n` +
+            `👤 *${tenantName}*\n` +
+            `📍 ${propertyUnit}\n` +
+            `💰 Monto: *${monto}*\n` +
+            `📅 Fecha: ${fecha}\n` +
+            `🧾 Recibo N°: ${recibo}`;
 
           const notifConfig = await prisma.notificationConfig.findFirst({ where: { companyId: null } });
+
+          // 1. Enviar al INQUILINO — prioriza su key individual, si no tiene
+          //    usa la key GLOBAL de TextMeBot (funciona para cualquier número)
           const tmbKeyTenant = (tenant.textMeBotApiKey as string)?.trim() || notifConfig?.textMeBotSenderKey?.trim();
-          const recipientsCC = notifConfig?.textMeBotSenderKey && notifConfig?.ccNumbersTextMeBot
-            ? (notifConfig.ccNumbersTextMeBot as string).split(',').map((n: string) => n.trim()).filter(Boolean)
-            : [];
+          if (tmbKeyTenant) {
+            await TextMeBotService.send(tenant.phone, tmbKeyTenant, msgInquilino, proofUrl, fileDisp)
+              .catch(e => console.error('⚠️ TextMeBot inquilino:', e));
+            await new Promise(r => setTimeout(r, 9000)); // TextMeBot exige mínimo 8 seg entre mensajes
+          }
 
-          let primerEnvio = true; // controla si ya esperamos el delay antes del primer mensaje de este bloque
-
-          for (let i = 0; i < proofList.length; i++) {
-            const { proofBase64: pBase64, proofMime: pMime, proofName: pName } = proofList[i];
-            const ext      = pName.includes('.') ? pName.split('.').pop() : 'jpg';
-            const tmpName  = `proof-${updated.id}-${Date.now()}-${i}.${ext}`;
-            const tmpPath  = path.join(os.tmpdir(), tmpName);
-            const fileDisp = pName || 'comprobante';
-            fs.writeFileSync(tmpPath, Buffer.from(pBase64, 'base64'));
-
-            // URL pública temporal que TextMeBot descarga para adjuntar
-            const proofUrl = `${env.APP_URL}/api/payments/proof/${tmpName}`;
-            const numeroAdjunto = totalProofs > 1 ? ` (${i + 1}/${totalProofs})` : '';
-
-            // Mensaje para el inquilino (solo en el primer adjunto se incluye el detalle completo)
-            const msgInquilino = i === 0
-              ? `✅ *Rentify App — Comprobante de Pago*\n\n` +
-                `Hola *${tenantName}*, tu pago fue registrado.\n\n` +
-                `📍 Unidad: ${propertyUnit}\n` +
-                `💰 Monto: *${monto}*\n` +
-                `📅 Fecha: ${fecha}\n` +
-                `🧾 Recibo N°: ${recibo}\n\n` +
-                `📎 Tu comprobante${totalProofs > 1 ? 's se adjuntan' : ' se adjunta'} a este mensaje${numeroAdjunto}.`
-              : `📎 Comprobante adjunto${numeroAdjunto}`;
-
-            // Mensaje para CC
-            const msgCC = i === 0
-              ? `📎 *Rentify — Comprobante de Pago*\n\n` +
-                `👤 *${tenantName}*\n` +
-                `📍 ${propertyUnit}\n` +
-                `💰 Monto: *${monto}*\n` +
-                `📅 Fecha: ${fecha}\n` +
-                `🧾 Recibo N°: ${recibo}${numeroAdjunto}`
-              : `📎 Comprobante adjunto${numeroAdjunto}`;
-
-            // 1. Enviar al INQUILINO — prioriza su key individual, si no tiene
-            //    usa la key GLOBAL de TextMeBot (funciona para cualquier número)
-            if (tmbKeyTenant) {
-              if (!primerEnvio) await new Promise(r => setTimeout(r, 9000)); // TextMeBot exige mínimo 8 seg entre mensajes
-              await TextMeBotService.send(tenant.phone, tmbKeyTenant, msgInquilino, proofUrl, fileDisp)
-                .catch(e => console.error('⚠️ TextMeBot inquilino:', e));
-              primerEnvio = false;
-            }
-
-            // 2. Enviar a números CC
-            for (const phone of recipientsCC) {
-              if (!primerEnvio) await new Promise(r => setTimeout(r, 9000)); // TextMeBot exige mínimo 8 seg entre mensajes
-              await TextMeBotService.send(phone, notifConfig!.textMeBotSenderKey as string, msgCC, proofUrl, fileDisp)
+          // 2. Enviar a números CC
+          if (notifConfig?.textMeBotSenderKey && notifConfig?.ccNumbersTextMeBot) {
+            const recipients = (notifConfig.ccNumbersTextMeBot as string)
+              .split(',').map((n: string) => n.trim()).filter(Boolean);
+            for (const phone of recipients) {
+              await new Promise(r => setTimeout(r, 9000)); // TextMeBot exige mínimo 8 seg entre mensajes
+              await TextMeBotService.send(phone, notifConfig.textMeBotSenderKey as string, msgCC, proofUrl, fileDisp)
                 .catch(console.error);
-              primerEnvio = false;
             }
-
-            // Limpiar archivo temporal después de 5 minutos
-            setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 5 * 60 * 1000);
+            console.log(`📎 Comprobante enviado a ${recipients.length} CC`);
           }
 
-          if (recipientsCC.length) {
-            console.log(`📎 ${totalProofs} comprobante(s) enviado(s) a ${recipientsCC.length} CC`);
-          }
+          // Limpiar archivo temporal después de 5 minutos
+          setTimeout(() => { try { fs.unlinkSync(tmpPath); } catch {} }, 5 * 60 * 1000);
 
         } catch (proofErr) {
-          console.error('⚠️ Error enviando comprobante(s) adjunto(s):', proofErr);
+          console.error('⚠️ Error enviando comprobante adjunto:', proofErr);
         }
       }
 
@@ -571,14 +544,14 @@ export const paymentsController = {
 
         // Notas de débito del mismo período (filtradas por mes/año del pago)
         const periodDebitNotes = (p.contract.debitNotes || []).filter(
-          (dn: any) => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
         );
         const debitHNL = periodDebitNotes
-          .filter((dn: any) => dn.currency === 'HNL')
-          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
+          .filter(dn => dn.currency === 'HNL')
+          .reduce((s, dn) => s + toNumber(dn.amount), 0);
         const debitUSD = periodDebitNotes
-          .filter((dn: any) => dn.currency === 'USD')
-          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
+          .filter(dn => dn.currency === 'USD')
+          .reduce((s, dn) => s + toNumber(dn.amount), 0);
 
         const balanceHNL = contractCurrency === 'HNL' ? balance : balance * bchRate;
         const totalDebitHNL = debitHNL + debitUSD * bchRate;
@@ -630,14 +603,14 @@ export const paymentsController = {
         const bal    = Math.max(0, due - paid);
         const balHNL = p.contract.currency === 'HNL' ? bal : bal * bchRate;
         const periodDebitNotes = (p.contract.debitNotes || []).filter(
-          (dn: any) => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
+          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
         );
         const debitHNL = periodDebitNotes
-          .filter((dn: any) => dn.currency === 'HNL')
-          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
+          .filter(dn => dn.currency === 'HNL')
+          .reduce((s, dn) => s + toNumber(dn.amount), 0);
         const debitUSD = periodDebitNotes
-          .filter((dn: any) => dn.currency === 'USD')
-          .reduce((s: number, dn: any) => s + toNumber(dn.amount), 0);
+          .filter(dn => dn.currency === 'USD')
+          .reduce((s, dn) => s + toNumber(dn.amount), 0);
 
         if (['PENDING','PARTIAL','LATE'].includes(p.status)) {
           byTenant[tid].subtotalHNL += balHNL + debitHNL + debitUSD * bchRate;
@@ -812,47 +785,5 @@ export const paymentsController = {
 
       res.json(successResponse(updated, 'Pago actualizado correctamente.'));
     } catch (err) { next(err); }
-  },
-
-  /**
-   * GET /api/payments/proof/:filename — sirve temporalmente un comprobante
-   * o reporte PDF para que TextMeBot pueda descargarlo y adjuntarlo al
-   * mensaje de WhatsApp. SIN autenticación (TextMeBot es un servicio
-   * externo que no tiene el JWT del sistema) — por eso se monta antes
-   * del middleware `authenticate` en payments.routes.ts.
-   *
-   * El archivo vive en el directorio temporal del sistema (os.tmpdir())
-   * y se borra automáticamente 5 minutos después de generarse (ver los
-   * bloques de envío de comprobante más arriba en este mismo archivo,
-   * y sendCuentasPorCobrarReport en notification.job.ts).
-   */
-  async serveProof(req: { params: { filename: string } }, res: Response): Promise<void> {
-    const { filename } = req.params;
-
-    // Seguridad: solo permitir nombres de archivo generados por el propio
-    // sistema (prefijo "proof-"), sin separadores de ruta — evita acceso
-    // a archivos arbitrarios del servidor.
-    if (!filename || filename.includes('..') || filename.includes('/') || filename.includes('\\') || !filename.startsWith('proof-')) {
-      res.status(400).send('Nombre de archivo inválido.');
-      return;
-    }
-
-    const filePath = path.join(os.tmpdir(), filename);
-    if (!fs.existsSync(filePath)) {
-      res.status(404).send('El comprobante ya no está disponible (puede haber expirado).');
-      return;
-    }
-
-    const ext = path.extname(filename).toLowerCase();
-    const mimeByExt: Record<string, string> = {
-      '.pdf': 'application/pdf',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.png': 'image/png',
-      '.webp': 'image/webp',
-    };
-    res.setHeader('Content-Type', mimeByExt[ext] || 'application/octet-stream');
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-    fs.createReadStream(filePath).pipe(res);
   },
 };
