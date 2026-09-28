@@ -63,9 +63,29 @@ export class ExchangeRateService {
         { timeout: 8000, headers: BROWSER_HEADERS, responseType: 'text' }
       );
 
-      // Aislar la sección del DÓLAR (todo antes de la palabra "EURO"),
-      // porque la página también publica el precio del euro justo después.
-      const dolarSection = html.split(/EURO/i)[0] || html;
+      // Anclar por el NOMBRE DEL ARCHIVO del ícono (dolar.svg / euro.svg)
+      // en vez de la palabra "EURO" como texto — el nombre de archivo es
+      // un marcador inequívoco que no puede aparecer antes de tiempo en
+      // el <title> o metadatos de la página, a diferencia de la palabra
+      // "EURO" suelta.
+      const dolarIdx = html.search(/dolar\.svg/i);
+      const euroIdx  = html.search(/euro\.svg/i);
+
+      let dolarSection: string;
+      if (dolarIdx === -1) {
+        // No se encontró el ícono — la página pudo haber cambiado.
+        dolarSection = '';
+      } else if (euroIdx !== -1 && euroIdx > dolarIdx) {
+        // Caso esperado: dólar aparece primero, euro después.
+        dolarSection = html.slice(dolarIdx, euroIdx);
+      } else if (euroIdx !== -1 && euroIdx < dolarIdx) {
+        // Orden invertido en el HTML real — tomar desde el ícono del
+        // dólar hasta el final (no debería haber más secciones después).
+        dolarSection = html.slice(dolarIdx);
+      } else {
+        // No se encontró euro.svg — limitar ventana para no barrer toda la página.
+        dolarSection = html.slice(dolarIdx, dolarIdx + 1500);
+      }
 
       const compraMatch = dolarSection.match(/Compra[^0-9]{0,25}(\d{2}\.\d{2,4})/i);
       const ventaMatch  = dolarSection.match(/Venta[^0-9]{0,25}(\d{2}\.\d{2,4})/i);
@@ -73,10 +93,16 @@ export class ExchangeRateService {
       const compra = compraMatch ? parseFloat(compraMatch[1]) : NaN;
       const venta  = ventaMatch  ? parseFloat(ventaMatch[1])  : NaN;
 
-      if (validar(compra) && validar(venta) && venta >= compra) {
+      // Validación extra: el margen compra-venta del DÓLAR en Honduras es
+      // típicamente < 0.5 HNL. El del EURO ronda 4-5 HNL. Si el margen es
+      // demasiado grande, es señal de que agarramos los números del euro
+      // por error — se descarta en vez de guardar un dato incorrecto.
+      const margenRazonable = validar(compra) && validar(venta) && venta >= compra && (venta - compra) <= 1.0;
+
+      if (margenRazonable) {
         return { compra, venta };
       }
-      console.warn('⚠️ Banpaís respondió pero no se pudo extraer un valor válido.');
+      console.warn(`⚠️ Banpaís: no se pudo extraer un valor válido del dólar (compra=${compra}, venta=${venta}).`);
       return null;
     } catch (e) {
       console.warn('⚠️ Banpaís no disponible desde este servidor:', (e as Error).message);
