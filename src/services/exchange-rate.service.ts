@@ -4,30 +4,22 @@
 // desde Railway (sin bloqueo por datacenter).
 //
 // FUENTES EN CASCADA:
-//  1. ExchangeRate-API (v6.exchangerate-api.com) — ya usada en el proyecto,
-//     requiere EXCHANGE_RATE_API_KEY en Railway Variables.
-//  2. Frankfurter (api.frankfurter.app) — 100% gratis, sin key, mantenida
-//     por el Banco Central Europeo.
+//  1. Banpaís (banpais.hn/divisas/barradolar.php) — tasa de VENTA real,
+//     publicada por el banco. Página HTML simple (sin JavaScript), así
+//     que no debería tener el mismo bloqueo por IP de datacenter que
+//     sufrieron Ficohsa y el BCH en intentos anteriores. Si Banpaís
+//     bloquea a Railway o cambia su página, cae automáticamente a la
+//     fuente 2.
+//  2. ExchangeRate-API (v6.exchangerate-api.com) — requiere
+//     EXCHANGE_RATE_API_KEY en Railway Variables. Da la tasa MEDIA de
+//     mercado (no distingue compra/venta), así que se le suma un
+//     margen (ver EXCHANGE_RATE_VENTA_SPREAD más abajo) para
+//     aproximarla a una venta real mientras Banpaís no esté disponible.
+//  3. Frankfurter (api.frankfurter.app) — 100% gratis, sin key, mismo
+//     tratamiento de margen que la fuente 2.
 //
-// NOTA SOBRE COMPRA vs VENTA:
-//  Ninguna de las dos fuentes anteriores distingue compra/venta — ambas
-//  devuelven la tasa MEDIA de mercado (interbancaria), que es más baja
-//  que la tasa de VENTA que publican los bancos hondureños (Banpaís, BAC,
-//  Ficohsa). La diferencia (margen/spread) es la ganancia del banco.
-//
-//  Para acercar el número a la venta real, sumamos un margen fijo a la
-//  tasa media. Ese margen se configura en Railway → Variables con:
-//
-//      EXCHANGE_RATE_VENTA_SPREAD=0.15
-//
-//  Cómo calibrarlo: entrá a la web de Banpaís, mirá su tasa de VENTA de
-//  hoy, y restale la tasa que muestra este sistema en "Editar manualmente"
-//  (que es la media, antes de aplicar el margen — la ves en el campo
-//  "rateCompra" guardado). Esa diferencia es el spread correcto.
-//  Si no se configura, se usa 0.15 como valor por defecto.
-//
-//  El botón "Editar manualmente" siempre tiene prioridad — usalo cualquier
-//  día que el número automático no coincida con lo que ves en el banco.
+//  El botón "Editar manualmente" siempre tiene prioridad — usalo
+//  cualquier día que el número automático no coincida con el banco.
 import axios from 'axios';
 import { prisma } from '../config/database';
 import { env } from '../config/env';
@@ -37,7 +29,16 @@ const AXIOS_HEADERS = {
   'Accept': 'application/json',
 };
 
-// Margen que se suma a la tasa media para aproximar la tasa de VENTA.
+// Headers tipo navegador real — reduce la chance de que Banpaís bloquee
+// la petición por parecer un bot/script.
+const BROWSER_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+  'Accept-Language': 'es-HN,es;q=0.9',
+};
+
+// Margen que se suma a la tasa media (fuentes 2 y 3) para aproximar la
+// tasa de VENTA cuando Banpaís no está disponible.
 // Configurable en Railway → Variables → EXCHANGE_RATE_VENTA_SPREAD
 function getVentaSpread(): number {
   const raw = process.env.EXCHANGE_RATE_VENTA_SPREAD;
@@ -51,6 +52,39 @@ function validar(n: number): boolean {
 
 export class ExchangeRateService {
   /**
+   * Scraping de la tasa real de Banpaís desde su página pública de
+   * divisas (la misma que usan para el widget embebido en otros sitios).
+   * Devuelve { compra, venta } o null si no se pudo extraer.
+   */
+  static async fetchFromBanpais(): Promise<{ compra: number; venta: number } | null> {
+    try {
+      const { data: html } = await axios.get<string>(
+        'https://www.banpais.hn/divisas/barradolar.php',
+        { timeout: 8000, headers: BROWSER_HEADERS, responseType: 'text' }
+      );
+
+      // Aislar la sección del DÓLAR (todo antes de la palabra "EURO"),
+      // porque la página también publica el precio del euro justo después.
+      const dolarSection = html.split(/EURO/i)[0] || html;
+
+      const compraMatch = dolarSection.match(/Compra[^0-9]{0,25}(\d{2}\.\d{2,4})/i);
+      const ventaMatch  = dolarSection.match(/Venta[^0-9]{0,25}(\d{2}\.\d{2,4})/i);
+
+      const compra = compraMatch ? parseFloat(compraMatch[1]) : NaN;
+      const venta  = ventaMatch  ? parseFloat(ventaMatch[1])  : NaN;
+
+      if (validar(compra) && validar(venta) && venta >= compra) {
+        return { compra, venta };
+      }
+      console.warn('⚠️ Banpaís respondió pero no se pudo extraer un valor válido.');
+      return null;
+    } catch (e) {
+      console.warn('⚠️ Banpaís no disponible desde este servidor:', (e as Error).message);
+      return null;
+    }
+  }
+
+  /**
    * Tasa de HOY. Si el registro ya viene de fuente válida, lo devuelve
    * sin volver a consultar. Si viene de una fuente vieja, lo actualiza.
    */
@@ -59,7 +93,7 @@ export class ExchangeRateService {
     today.setHours(0, 0, 0, 0);
 
     const existing = await prisma.exchangeRate.findUnique({ where: { date: today } });
-    const fuentesValidas = ['ExchangeRate-API', 'Frankfurter', 'Manual'];
+    const fuentesValidas = ['Banpaís', 'ExchangeRate-API', 'Frankfurter', 'Manual'];
     if (existing && fuentesValidas.includes(existing.source)) {
       return parseFloat(existing.rate.toString());
     }
@@ -68,19 +102,31 @@ export class ExchangeRateService {
   }
 
   /**
-   * Descarga la tasa media actual desde fuentes en cascada, le suma el
-   * margen de venta configurado, y guarda ambos valores en BD:
-   *   - rate       → tasa de VENTA estimada (media + spread) — la que
-   *                  usa todo el sistema para conversiones.
-   *   - rateCompra → tasa media/interbancaria cruda (sin margen), solo
-   *                  como referencia para calibrar el spread.
+   * Descarga la tasa actual (Banpaís primero, con respaldo en cascada)
+   * y guarda en BD:
+   *   - rate       → tasa de VENTA — la que usa todo el sistema.
+   *   - rateCompra → tasa de compra (real de Banpaís, o media de mercado
+   *                  si se usó una fuente de respaldo), solo informativa.
    */
   static async fetchAndSave(): Promise<number> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+
+    // ── Fuente 1: Banpaís (tasa de venta REAL) ──────────────────────
+    const banpais = await this.fetchFromBanpais();
+    if (banpais) {
+      await prisma.exchangeRate.upsert({
+        where: { date: today },
+        update: { rate: banpais.venta, rateCompra: banpais.compra, source: 'Banpaís' },
+        create: { date: today, rate: banpais.venta, rateCompra: banpais.compra, source: 'Banpaís' },
+      });
+      console.log(`💱 Tasa Banpaís: compra L ${banpais.compra} · venta L ${banpais.venta}`);
+      return banpais.venta;
+    }
+
     const spread = getVentaSpread();
 
-    // ── Fuente 1: ExchangeRate-API ──────────────────────────────────
+    // ── Fuente 2: ExchangeRate-API (respaldo, tasa media + margen) ──
     const apiKey = env.EXCHANGE_RATE_API_KEY?.trim();
     if (apiKey) {
       try {
@@ -105,7 +151,7 @@ export class ExchangeRateService {
       }
     }
 
-    // ── Fuente 2: Frankfurter (ECB, sin key) ───────────────────────
+    // ── Fuente 3: Frankfurter (ECB, sin key) ───────────────────────
     try {
       const { data } = await axios.get(
         'https://api.frankfurter.app/latest?from=USD&to=HNL',
