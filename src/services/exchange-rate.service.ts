@@ -9,12 +9,25 @@
 //  2. Frankfurter (api.frankfurter.app) — 100% gratis, sin key, mantenida
 //     por el Banco Central Europeo.
 //
-// NOTA SOBRE LA TASA:
-//  Ambas fuentes dan la tasa de MERCADO USD/HNL (ej. 26.76), que es la
-//  tasa oficial del BCH que publican todos los bancos. La tasa de VENTA
-//  bancaria de Ficohsa/BAC agrega un pequeño margen (~0.10-0.15 HNL).
-//  Podés usar "Editar manualmente" para ajustar si necesitás la tasa de
-//  venta exacta de tu banco. El cron actualiza automáticamente cada día.
+// NOTA SOBRE COMPRA vs VENTA:
+//  Ninguna de las dos fuentes anteriores distingue compra/venta — ambas
+//  devuelven la tasa MEDIA de mercado (interbancaria), que es más baja
+//  que la tasa de VENTA que publican los bancos hondureños (Banpaís, BAC,
+//  Ficohsa). La diferencia (margen/spread) es la ganancia del banco.
+//
+//  Para acercar el número a la venta real, sumamos un margen fijo a la
+//  tasa media. Ese margen se configura en Railway → Variables con:
+//
+//      EXCHANGE_RATE_VENTA_SPREAD=0.15
+//
+//  Cómo calibrarlo: entrá a la web de Banpaís, mirá su tasa de VENTA de
+//  hoy, y restale la tasa que muestra este sistema en "Editar manualmente"
+//  (que es la media, antes de aplicar el margen — la ves en el campo
+//  "rateCompra" guardado). Esa diferencia es el spread correcto.
+//  Si no se configura, se usa 0.15 como valor por defecto.
+//
+//  El botón "Editar manualmente" siempre tiene prioridad — usalo cualquier
+//  día que el número automático no coincida con lo que ves en el banco.
 import axios from 'axios';
 import { prisma } from '../config/database';
 import { env } from '../config/env';
@@ -23,6 +36,14 @@ const AXIOS_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (compatible; RentifyApp/1.0)',
   'Accept': 'application/json',
 };
+
+// Margen que se suma a la tasa media para aproximar la tasa de VENTA.
+// Configurable en Railway → Variables → EXCHANGE_RATE_VENTA_SPREAD
+function getVentaSpread(): number {
+  const raw = process.env.EXCHANGE_RATE_VENTA_SPREAD;
+  const parsed = raw ? parseFloat(raw) : NaN;
+  return !isNaN(parsed) && parsed >= 0 && parsed <= 2 ? parsed : 0.15;
+}
 
 function validar(n: number): boolean {
   return !isNaN(n) && n >= 15 && n <= 50;
@@ -47,11 +68,17 @@ export class ExchangeRateService {
   }
 
   /**
-   * Descarga la tasa actual desde fuentes en cascada y guarda en BD.
+   * Descarga la tasa media actual desde fuentes en cascada, le suma el
+   * margen de venta configurado, y guarda ambos valores en BD:
+   *   - rate       → tasa de VENTA estimada (media + spread) — la que
+   *                  usa todo el sistema para conversiones.
+   *   - rateCompra → tasa media/interbancaria cruda (sin margen), solo
+   *                  como referencia para calibrar el spread.
    */
   static async fetchAndSave(): Promise<number> {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
+    const spread = getVentaSpread();
 
     // ── Fuente 1: ExchangeRate-API ──────────────────────────────────
     const apiKey = env.EXCHANGE_RATE_API_KEY?.trim();
@@ -63,13 +90,14 @@ export class ExchangeRateService {
         );
         const hnl = data?.conversion_rates?.HNL ?? data?.rates?.HNL;
         if (hnl && validar(Number(hnl))) {
-          const venta = Number(hnl);
+          const media = Number(hnl);
+          const venta = parseFloat((media + spread).toFixed(4));
           await prisma.exchangeRate.upsert({
             where: { date: today },
-            update: { rate: venta, source: 'ExchangeRate-API' },
-            create: { date: today, rate: venta, source: 'ExchangeRate-API' },
+            update: { rate: venta, rateCompra: media, source: 'ExchangeRate-API' },
+            create: { date: today, rate: venta, rateCompra: media, source: 'ExchangeRate-API' },
           });
-          console.log(`💱 Tasa ExchangeRate-API: L ${venta} por USD`);
+          console.log(`💱 Tasa ExchangeRate-API: media L ${media} + spread ${spread} = venta L ${venta}`);
           return venta;
         }
       } catch (e1) {
@@ -85,13 +113,14 @@ export class ExchangeRateService {
       );
       const hnl = data?.rates?.HNL;
       if (hnl && validar(Number(hnl))) {
-        const venta = Number(hnl);
+        const media = Number(hnl);
+        const venta = parseFloat((media + spread).toFixed(4));
         await prisma.exchangeRate.upsert({
           where: { date: today },
-          update: { rate: venta, source: 'Frankfurter' },
-          create: { date: today, rate: venta, source: 'Frankfurter' },
+          update: { rate: venta, rateCompra: media, source: 'Frankfurter' },
+          create: { date: today, rate: venta, rateCompra: media, source: 'Frankfurter' },
         });
-        console.log(`💱 Tasa Frankfurter: L ${venta} por USD`);
+        console.log(`💱 Tasa Frankfurter: media L ${media} + spread ${spread} = venta L ${venta}`);
         return venta;
       }
     } catch (e2) {
