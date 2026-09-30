@@ -750,15 +750,15 @@ export const paymentsController = {
       });
       if (!payment) throw new AppError('Pago no encontrado.', 404);
 
-      // Si el estado se está revirtiendo explícitamente a "Pendiente" o "En
-      // mora" (ej. de Pagado → Pendiente), es una reversión de pago: hay
-      // que limpiar el abono y todo lo que quedó registrado junto con él,
-      // o el estado de cuenta seguiría mostrando el abono de un pago que
-      // ya no está pagado.
-      const esReversionDePago =
+      // Si se está guardando con estado "Pendiente" o "En mora" y todavía
+      // queda un abono registrado, hay que limpiarlo — sin importar si el
+      // estado "cambió" en este guardado o ya venía así de antes (esto
+      // también repara pagos que quedaron con el abono atascado desde una
+      // reversión anterior, con solo volver a guardar esa nota).
+      const debeLimpiarAbono =
         status !== undefined &&
         ['PENDING', 'LATE'].includes(status) &&
-        payment.status !== status;
+        toNumber(payment.amountPaid) > 0;
 
       const updated = await prisma.payment.update({
         where: { id: req.params.id },
@@ -769,7 +769,7 @@ export const paymentsController = {
           ...(dueDate     !== undefined && dueDate && { dueDate: new Date(dueDate) }),
           ...(status      !== undefined && { status }),
           ...(notes       !== undefined && { notes }),
-          ...(esReversionDePago && {
+          ...(debeLimpiarAbono && {
             amountPaid: 0,
             paymentDate: null,
             exchangeRateUsed: null,
