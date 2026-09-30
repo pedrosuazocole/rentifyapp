@@ -3559,9 +3559,10 @@ function renderCxcResults(data) {
   );
   const debitTotal = (p) => {
     const dns = getDebitNotes(p);
+    const rate = p.reportRate || bchRate;
     return dns.reduce((s, dn) => {
       const amt = parseFloat(dn.amount||0);
-      return s + (dn.currency === 'HNL' ? amt : amt * bchRate);
+      return s + (dn.currency === 'HNL' ? amt : amt * rate);
     }, 0);
   };
   const paymentBalance = (p) => {
@@ -3593,7 +3594,11 @@ function renderCxcResults(data) {
       const contractCurrency = p.contract?.currency || p.paymentCurrency;
       const isUSD = contractCurrency === 'USD';
 
-      const totalHNL = (isUSD ? bal * bchRate : bal) + dnTotal;
+      // reportRate: tasa propia de esta fila (histórica del período, o la
+      // real usada al cobrar) — cada mes conserva SU tasa en vez de usar
+      // siempre la tasa de hoy.
+      const rowRate = p.reportRate || bchRate;
+      const totalHNL = (isUSD ? bal * rowRate : bal) + dnTotal;
       const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
 
       if (isPending) clientTotal += totalHNL;
@@ -3604,7 +3609,7 @@ function renderCxcResults(data) {
 
       // T/C solo si el contrato es en USD
       const rateCell = isUSD
-        ? `<span class="td-mono" style="font-size:0.78rem">L ${bchRate.toFixed(4)}</span>`
+        ? `<span class="td-mono" style="font-size:0.78rem">L ${rowRate.toFixed(4)}</span>`
         : `<span class="text-muted" style="font-size:0.78rem">—</span>`;
 
       clientRows += `<tr>
@@ -3755,12 +3760,15 @@ async function exportCxcExcel() {
       const paid   = parseFloat(p.amountPaid||0);
       const bal    = Math.max(0, due - paid);
       const dns    = (p.contract?.debitNotes||[]).filter(dn=>dn.periodMonth===p.periodMonth&&dn.periodYear===p.periodYear);
-      const dnHNL  = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?bchRate:1),0);
-      const balHNL = (contractCurrency==='HNL' ? bal : bal * bchRate) + dnHNL;
+      const contractCurrency = p.contract?.currency || p.paymentCurrency;
+      // reportRate: tasa propia de esta fila (histórica del período, o la
+      // real usada al cobrar) — cada mes conserva SU tasa.
+      const rowRate = p.reportRate || bchRate;
+      const dnHNL  = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?rowRate:1),0);
+      const balHNL = (contractCurrency==='HNL' ? bal : bal * rowRate) + dnHNL;
       const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
       if (isPending) clientTotal += balHNL;
 
-      const contractCurrency = p.contract?.currency || p.paymentCurrency;
       detailRows.push([
         `${group.tenantName}`,
         group.tenantPhone,
@@ -3774,7 +3782,7 @@ async function exportCxcExcel() {
         bal,
         0, // Mora siempre 0
         dnHNL,
-        contractCurrency==='USD' ? bchRate : '',
+        contractCurrency==='USD' ? rowRate : '',
         isPending ? parseFloat(balHNL.toFixed(2)) : '',
         STATUS_ES[p.status]||p.status,
       ]);
@@ -3862,8 +3870,11 @@ function printCxcReport() {
       const paid = parseFloat(p.amountPaid||0);
       const bal  = Math.max(0, due - paid);
       const dns  = (p.contract?.debitNotes||[]).filter(dn=>dn.periodMonth===p.periodMonth&&dn.periodYear===p.periodYear);
-      const dnHNL = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?bchRate:1),0);
-      const balHNL = (contractCurr(p)==='HNL' ? bal : bal * bchRate) + dnHNL;
+      // reportRate: tasa propia de esta fila (histórica del período, o la
+      // real usada al cobrar) — cada mes conserva SU tasa.
+      const rowRate = p.reportRate || bchRate;
+      const dnHNL = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?rowRate:1),0);
+      const balHNL = (contractCurr(p)==='HNL' ? bal : bal * rowRate) + dnHNL;
       const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
       if (isPending) clientTotal += balHNL;
 
@@ -3877,7 +3888,7 @@ function printCxcReport() {
         <td class="${bal>0?'danger':'success'}">${bal>0?fmtMon(bal,contractCurr(p)):'✓'}</td>
         <td>L 0.00</td>
         <td>${dns.length>0?fmtL(dnHNL)+` (${dns.length})`:'—'}</td>
-        <td>${contractCurr(p)==='USD'?`L ${parseFloat(bchRate).toFixed(4)}`:'—'}</td>
+        <td>${contractCurr(p)==='USD'?`L ${parseFloat(rowRate).toFixed(4)}`:'—'}</td>
         <td class="bold">${isPending?fmtL(balHNL):'—'}</td>
         <td><span class="badge ${BADGE_CLASS[p.status]||'badge-neutral'}">${STATUS_ES[p.status]||p.status}</span></td>
       </tr>`;
