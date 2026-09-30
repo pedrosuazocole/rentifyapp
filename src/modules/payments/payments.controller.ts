@@ -530,6 +530,32 @@ export const paymentsController = {
         },
       });
 
+      // ── Tasa POR FILA en vez de una sola tasa "de hoy" para todo el
+      //    reporte — así cada período conserva SU propia tasa (ej. julio
+      //    mantiene la tasa de julio, no la de hoy):
+      //    - Pagos ya cobrados: se respeta exchangeRateUsed, la tasa REAL
+      //      que se usó al momento de cobrar ese pago.
+      //    - Pagos pendientes/en mora: se usa la tasa vigente en la fecha
+      //      de vencimiento de ese período.
+      const uniqueDueDateKeys: string[] = Array.from(new Set(
+        payments.filter(p => !p.exchangeRateUsed).map(p => p.dueDate.toISOString().slice(0, 10))
+      ));
+      const dateRateEntries = await Promise.all(
+        uniqueDueDateKeys.map(async key =>
+          [key, await ExchangeRateService.getRateForDate(new Date(key))] as const
+        )
+      );
+      const dateRateCache = new Map<string, number>(dateRateEntries);
+
+      const rowRateById = new Map<string, number>();
+      for (const p of payments) {
+        const key = p.dueDate.toISOString().slice(0, 10);
+        rowRateById.set(
+          p.id,
+          p.exchangeRateUsed ? toNumber(p.exchangeRateUsed) : (dateRateCache.get(key) ?? bchRate)
+        );
+      }
+
       // Calcular totales por estado y moneda (mora = 0, no se suma)
       let totalPending = 0, totalPartial = 0, totalPaid = 0, totalLate = 0, totalWaived = 0;
       let totalHNL = 0, totalUSD = 0, totalPendingHNL = 0, totalPendingUSD = 0;
@@ -538,6 +564,7 @@ export const paymentsController = {
       for (const p of payments) {
         const due = toNumber(p.amountDue);
         const paid = toNumber(p.amountPaid);
+        const rowRate = rowRateById.get(p.id)!;
         // Usar la moneda del contrato (no paymentCurrency) para determinar si es USD o HNL
         const contractCurrency = p.contract.currency;
         const balance = Math.max(0, due - paid);
@@ -553,8 +580,8 @@ export const paymentsController = {
           .filter(dn => dn.currency === 'USD')
           .reduce((s, dn) => s + toNumber(dn.amount), 0);
 
-        const balanceHNL = contractCurrency === 'HNL' ? balance : balance * bchRate;
-        const totalDebitHNL = debitHNL + debitUSD * bchRate;
+        const balanceHNL = contractCurrency === 'HNL' ? balance : balance * rowRate;
+        const totalDebitHNL = debitHNL + debitUSD * rowRate;
 
         if (contractCurrency === 'HNL') totalHNL += due;
         else totalUSD += due;
@@ -598,10 +625,11 @@ export const paymentsController = {
             payments: [],
           };
         }
-        const due    = toNumber(p.amountDue);
-        const paid   = toNumber(p.amountPaid);
-        const bal    = Math.max(0, due - paid);
-        const balHNL = p.contract.currency === 'HNL' ? bal : bal * bchRate;
+        const due     = toNumber(p.amountDue);
+        const paid    = toNumber(p.amountPaid);
+        const rowRate = rowRateById.get(p.id)!;
+        const bal     = Math.max(0, due - paid);
+        const balHNL  = p.contract.currency === 'HNL' ? bal : bal * rowRate;
         const periodDebitNotes = (p.contract.debitNotes || []).filter(
           dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
         );
@@ -613,9 +641,12 @@ export const paymentsController = {
           .reduce((s, dn) => s + toNumber(dn.amount), 0);
 
         if (['PENDING','PARTIAL','LATE'].includes(p.status)) {
-          byTenant[tid].subtotalHNL += balHNL + debitHNL + debitUSD * bchRate;
+          byTenant[tid].subtotalHNL += balHNL + debitHNL + debitUSD * rowRate;
         }
-        byTenant[tid].payments.push(p);
+        // reportRate: la tasa propia de ESTA fila (histórica del período,
+        // o la real usada al cobrar) — el frontend la usa para pintar la
+        // columna T/C y las conversiones en vez de una tasa única global.
+        byTenant[tid].payments.push({ ...p, reportRate: rowRate } as typeof p & { reportRate: number });
       }
 
       res.json(successResponse({
@@ -635,7 +666,7 @@ export const paymentsController = {
           totalPendingUSD: (totalPendingHNL / bchRate).toFixed(2),
           grandTotalHNL: grandTotalHNL.toFixed(2),
         },
-        payments,
+        payments: payments.map(p => ({ ...p, reportRate: rowRateById.get(p.id) })),
       }));
     } catch (err) { next(err); }
   },
@@ -719,6 +750,16 @@ export const paymentsController = {
       });
       if (!payment) throw new AppError('Pago no encontrado.', 404);
 
+      // Si el estado se está revirtiendo explícitamente a "Pendiente" o "En
+      // mora" (ej. de Pagado → Pendiente), es una reversión de pago: hay
+      // que limpiar el abono y todo lo que quedó registrado junto con él,
+      // o el estado de cuenta seguiría mostrando el abono de un pago que
+      // ya no está pagado.
+      const esReversionDePago =
+        status !== undefined &&
+        ['PENDING', 'LATE'].includes(status) &&
+        payment.status !== status;
+
       const updated = await prisma.payment.update({
         where: { id: req.params.id },
         data: {
@@ -728,6 +769,17 @@ export const paymentsController = {
           ...(dueDate     !== undefined && dueDate && { dueDate: new Date(dueDate) }),
           ...(status      !== undefined && { status }),
           ...(notes       !== undefined && { notes }),
+          ...(esReversionDePago && {
+            amountPaid: 0,
+            paymentDate: null,
+            exchangeRateUsed: null,
+            amountInContractCurrency: null,
+            lateFeeAmount: 0,
+            daysLate: 0,
+            isLate: status === 'LATE',
+            receiptSentAt: null,
+            receiptPdfUrl: null,
+          }),
         },
         include: { contract: { include: { tenant: true, unit: { include: { property: true } } } } },
       });
