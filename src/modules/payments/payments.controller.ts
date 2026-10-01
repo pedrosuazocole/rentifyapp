@@ -569,37 +569,29 @@ export const paymentsController = {
         const contractCurrency = p.contract.currency;
         const balance = Math.max(0, due - paid);
 
-        // Notas de débito del mismo período (filtradas por mes/año del pago)
-        const periodDebitNotes = (p.contract.debitNotes || []).filter(
-          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
-        );
-        const debitHNL = periodDebitNotes
-          .filter(dn => dn.currency === 'HNL')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
-        const debitUSD = periodDebitNotes
-          .filter(dn => dn.currency === 'USD')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
-
+        // Nota: las notas de débito se muestran en su propia columna
+        // informativa (ver byTenant más abajo) pero NO se suman al Total
+        // HNL / subtotal / total global, que representan únicamente el
+        // saldo del alquiler convertido a HNL.
         const balanceHNL = contractCurrency === 'HNL' ? balance : balance * rowRate;
-        const totalDebitHNL = debitHNL + debitUSD * rowRate;
 
         if (contractCurrency === 'HNL') totalHNL += due;
         else totalUSD += due;
 
         if (p.status === 'PENDING') {
           totalPending++;
-          totalPendingHNL += balanceHNL + totalDebitHNL;
-          grandTotalHNL   += balanceHNL + totalDebitHNL;
+          totalPendingHNL += balanceHNL;
+          grandTotalHNL   += balanceHNL;
         } else if (p.status === 'PARTIAL') {
           totalPartial++;
-          totalPendingHNL += balanceHNL + totalDebitHNL;
-          grandTotalHNL   += balanceHNL + totalDebitHNL;
+          totalPendingHNL += balanceHNL;
+          grandTotalHNL   += balanceHNL;
         } else if (p.status === 'PAID') {
           totalPaid++;
         } else if (p.status === 'LATE') {
           totalLate++;
-          totalPendingHNL += balanceHNL + totalDebitHNL;
-          grandTotalHNL   += balanceHNL + totalDebitHNL;
+          totalPendingHNL += balanceHNL;
+          grandTotalHNL   += balanceHNL;
         } else if (p.status === 'WAIVED') {
           totalWaived++;
         }
@@ -630,18 +622,13 @@ export const paymentsController = {
         const rowRate = rowRateById.get(p.id)!;
         const bal     = Math.max(0, due - paid);
         const balHNL  = p.contract.currency === 'HNL' ? bal : bal * rowRate;
-        const periodDebitNotes = (p.contract.debitNotes || []).filter(
-          dn => dn.periodMonth === p.periodMonth && dn.periodYear === p.periodYear
-        );
-        const debitHNL = periodDebitNotes
-          .filter(dn => dn.currency === 'HNL')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
-        const debitUSD = periodDebitNotes
-          .filter(dn => dn.currency === 'USD')
-          .reduce((s, dn) => s + toNumber(dn.amount), 0);
 
+        // Nota: las notas de débito se muestran en su propia columna
+        // informativa (el frontend las recalcula desde p.contract.debitNotes)
+        // pero NO se suman al subtotal — este representa solo el saldo del
+        // alquiler convertido a HNL.
         if (['PENDING','PARTIAL','LATE'].includes(p.status)) {
-          byTenant[tid].subtotalHNL += balHNL + debitHNL + debitUSD * rowRate;
+          byTenant[tid].subtotalHNL += balHNL;
         }
         // reportRate: la tasa propia de ESTA fila (histórica del período,
         // o la real usada al cobrar) — el frontend la usa para pintar la
