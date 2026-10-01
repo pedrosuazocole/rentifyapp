@@ -3598,7 +3598,9 @@ function renderCxcResults(data) {
       // real usada al cobrar) — cada mes conserva SU tasa en vez de usar
       // siempre la tasa de hoy.
       const rowRate = p.reportRate || bchRate;
-      const totalHNL = (isUSD ? bal * rowRate : bal) + dnTotal;
+      // Notas Débito (dnTotal) se muestra en su propia columna, informativa
+      // — no se suma al Total HNL, que es solo el saldo del alquiler.
+      const totalHNL = isUSD ? bal * rowRate : bal;
       const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
 
       if (isPending) clientTotal += totalHNL;
@@ -3765,7 +3767,9 @@ async function exportCxcExcel() {
       // real usada al cobrar) — cada mes conserva SU tasa.
       const rowRate = p.reportRate || bchRate;
       const dnHNL  = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?rowRate:1),0);
-      const balHNL = (contractCurrency==='HNL' ? bal : bal * rowRate) + dnHNL;
+      // dnHNL se muestra en su propia columna (informativa) — no se suma
+      // al Total HNL, que es solo el saldo del alquiler convertido.
+      const balHNL = contractCurrency==='HNL' ? bal : bal * rowRate;
       const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
       if (isPending) clientTotal += balHNL;
 
@@ -3874,7 +3878,9 @@ function printCxcReport() {
       // real usada al cobrar) — cada mes conserva SU tasa.
       const rowRate = p.reportRate || bchRate;
       const dnHNL = dns.reduce((s,dn)=>s+parseFloat(dn.amount||0)*(dn.currency==='USD'?rowRate:1),0);
-      const balHNL = (contractCurr(p)==='HNL' ? bal : bal * rowRate) + dnHNL;
+      // dnHNL se muestra en su propia columna (informativa) — no se suma
+      // al Total HNL, que es solo el saldo del alquiler convertido.
+      const balHNL = contractCurr(p)==='HNL' ? bal : bal * rowRate;
       const isPending = ['PENDING','PARTIAL','LATE'].includes(p.status);
       if (isPending) clientTotal += balHNL;
 
