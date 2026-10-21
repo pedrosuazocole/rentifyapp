@@ -99,6 +99,14 @@ function formatDate(dateStr) {
   return d.toLocaleDateString('es-HN', { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
+// Fecha SIN desfase de zona horaria: las fechas del Tipo de cambio se guardan
+// como medianoche UTC; formatDate() las mostraría un día antes en Honduras (UTC-6).
+function formatDateUTC(dateStr) {
+  if (!dateStr) return '—';
+  const d = new Date(dateStr);
+  return d.toLocaleDateString('es-HN', { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
 function formatDateTime(dateStr) {
   if (!dateStr) return '—';
   const d = new Date(dateStr);
@@ -3016,7 +3024,7 @@ async function renderExchangeRates() {
             <thead><tr><th>Fecha</th><th>Tasa de Venta (L por 1 USD)</th><th>Fuente</th><th>Acción</th></tr></thead>
             <tbody>
               ${history.map(r => `<tr>
-                <td>${formatDate(r.date)}</td>
+                <td>${formatDateUTC(r.date)}</td>
                 <td class="td-mono">L ${parseFloat(r.rate).toFixed(4)}</td>
                 <td class="text-muted">${r.source}</td>
                 <td>
@@ -3108,7 +3116,7 @@ async function saveManualRate() {
     body: JSON.stringify({ date, rate }),
   });
 
-  toast(`✅ Tasa del ${formatDate(date)} guardada: L ${rate.toFixed(4)}`);
+  toast(`✅ Tasa del ${formatDateUTC(date)} guardada: L ${rate.toFixed(4)}`);
   closeModal('modal-manual-rate');
   renderExchangeRates();
 }
@@ -3148,7 +3156,7 @@ async function loadBchRates() {
           <thead><tr><th>Fecha</th><th>Compra (L/USD)</th><th>Venta (L/USD)</th><th>Fuente</th><th>Usar esta tasa</th></tr></thead>
           <tbody>
             ${rates.map(r => {
-              const fecha = r.fecha ? formatDate(r.fecha) : '—';
+              const fecha = r.fecha ? formatDateUTC(r.fecha) : '—';
               const compra = parseFloat(r.compra||r.rate||0).toFixed(4);
               const venta  = parseFloat(r.venta ||r.rate||0).toFixed(4);
               const rawDate = (r.fecha||'').toString().split('T')[0];
