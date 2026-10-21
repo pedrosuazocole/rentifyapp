@@ -533,12 +533,22 @@ export const paymentsController = {
       // ── Tasa POR FILA en vez de una sola tasa "de hoy" para todo el
       //    reporte — así cada período conserva SU propia tasa (ej. julio
       //    mantiene la tasa de julio, no la de hoy):
-      //    - Pagos ya cobrados: se respeta exchangeRateUsed, la tasa REAL
+      //    - Pagos ya cobrados por completo: se respeta exchangeRateUsed, la tasa REAL
       //      que se usó al momento de cobrar ese pago.
       //    - Pagos pendientes/en mora: se usa la tasa vigente en la fecha
       //      de vencimiento de ese período.
+      //    - Pagos con saldo pendiente (PENDING/LATE/PARTIAL con abono parcial):
+      //      el saldo se valora con la tasa de la tabla "Tipo de cambio" para
+      //      la fecha de vencimiento, así si corregís esa tasa el reporte se
+      //      actualiza. (Antes un abono parcial dejaba congelada la tasa del
+      //      día del abono y los cambios en Tipo de cambio no se reflejaban.)
+      const tieneSaldo = (p: typeof payments[number]) =>
+        Math.max(0, toNumber(p.amountDue) - toNumber(p.amountPaid)) > 0.005;
+      const usaTasaGuardada = (p: typeof payments[number]) =>
+        !!p.exchangeRateUsed && !tieneSaldo(p);
+
       const uniqueDueDateKeys: string[] = Array.from(new Set(
-        payments.filter(p => !p.exchangeRateUsed).map(p => p.dueDate.toISOString().slice(0, 10))
+        payments.filter((p: typeof payments[number]) => !usaTasaGuardada(p)).map((p: typeof payments[number]) => p.dueDate.toISOString().slice(0, 10))
       ));
       const dateRateEntries = await Promise.all(
         uniqueDueDateKeys.map(async key =>
@@ -552,7 +562,7 @@ export const paymentsController = {
         const key = p.dueDate.toISOString().slice(0, 10);
         rowRateById.set(
           p.id,
-          p.exchangeRateUsed ? toNumber(p.exchangeRateUsed) : (dateRateCache.get(key) ?? bchRate)
+          usaTasaGuardada(p) ? toNumber(p.exchangeRateUsed) : (dateRateCache.get(key) ?? bchRate)
         );
       }
 
